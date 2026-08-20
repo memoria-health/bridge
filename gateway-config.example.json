@@ -1,0 +1,9 @@
+{
+  "backend_url": "https://YOUR-NEMARA-BACKEND",
+  "gateway_token": "REPLACE_WITH_GATEWAY_TOKEN",
+  "livekit_url": "wss://YOUR-PROJECT.livekit.cloud",
+  "livekit_api_key": "REPLACE_WITH_LIVEKIT_API_KEY",
+  "livekit_api_secret": "REPLACE_WITH_LIVEKIT_API_SECRET",
+  "poll_seconds": 3,
+  "stream_mode": "continuous"
+}

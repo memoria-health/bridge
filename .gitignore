@@ -1,0 +1,11 @@
+.venv/
+browsers/
+logs/*
+!logs/.gitkeep
+cameras.json
+warner_cameras.json
+__pycache__/
+*.pyc
+*.zip
+
+.DS_Store

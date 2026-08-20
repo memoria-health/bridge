@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "cameras": [
+    {
+      "camera_id": "warner_generated_hash",
+      "device_id": "vendor-device-id",
+      "device_key": "productId:deviceId:deviceSecret",
+      "name": "Resident room",
+      "camera_user": "admin",
+      "camera_password": "camera-password",
+      "channel": 0,
+      "stream_id": 0,
+      "livekit_identities": ["cam_backend_assigned"]
+    }
+  ]
+}

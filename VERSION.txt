@@ -1,0 +1,5 @@
+Memoria Warner Bridge 2026.08.19-watchdog.1
+Default mode: continuous publishing
+Confirmed single-camera input: channel 0, stream 0
+Frame heartbeat: 5 seconds
+Video-stall recovery: camera worker restart after 20 seconds
