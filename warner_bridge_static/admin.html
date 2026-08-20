@@ -35,7 +35,7 @@
     <label for="channel">Channel</label>
     <input id="channel" type="number" min="0" value="0">
     <label for="stream">Stream</label>
-    <select id="stream"><option value="0">Sub stream</option><option value="1">Main stream</option></select>
+    <select id="stream"><option value="1">Main stream (full resolution)</option><option value="0">Sub stream (low resolution)</option></select>
     <p><button id="provision" onclick="provision()">Provision selected Warner camera</button></p>
     <div id="status" class="muted">Waiting for selection.</div>
     <pre id="output" hidden></pre>
@@ -59,7 +59,7 @@ async function provision(){
       camera_user:(doc.getElementById('user')?.value||'admin').trim(),
       camera_password:doc.getElementById('pwd')?.value||'',
       channel:Number(document.getElementById('channel').value||0),
-      stream_id:Number(document.getElementById('stream').value||0),
+      stream_id:Number(document.getElementById('stream').value||1),
     };
     if(!body.email) throw new Error('Caregiver email is required.');
     button.disabled=true;status.className='muted';status.textContent='Provisioning…';

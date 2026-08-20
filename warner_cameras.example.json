@@ -9,7 +9,7 @@
       "camera_user": "admin",
       "camera_password": "camera-password",
       "channel": 0,
-      "stream_id": 0,
+      "stream_id": 1,
       "livekit_identities": ["cam_backend_assigned"]
     }
   ]
