@@ -164,7 +164,10 @@
   }
   Player.init([canvas]);
   startAudioTap();
-  videoStream = canvas.captureStream(25);
+  // Capture at the camera's real rate. These stream 15fps (measured
+  // 2026-08-20), so 25 just duplicated frames for the encoder to
+  // discard. Raised to the true rate on the first frame below.
+  videoStream = canvas.captureStream(config.capture_fps || 15);
   const previousFrame = ConnectApi.onrecvframeex;
   ConnectApi.onrecvframeex = function (...args) {
     const frameType = Number(args[1]);

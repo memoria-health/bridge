@@ -93,14 +93,50 @@ Option 1 first, behind a flag, with the canvas path still available:
 a bad frame path shows up as a dead camera, and this is a healthcare
 product.
 
-## Open questions
+## Measured, 2026-08-20, live camera
 
-- **Annex-B or AVCC?** Whether NALUs carry `00 00 00 01` start codes or
-  length prefixes. One live I-frame settles it; handle both regardless,
-  it is a few lines.
-- **Are SPS/PPS in-band?** A decoder needs them. If the camera only
-  sends them on the first I-frame we must cache and re-inject on every
-  new subscriber, or late joiners get nothing.
+    I-frame  H265  2304x1296 @15fps  19,948 bytes
+             bytes: 00 x8, then 00 00 00 01 40 01 0c 01
+             NALs: 32 (VPS), 33 (SPS)
+    P-frame  H265  210-354 bytes
+    audio    AAC1  8 kHz / 16-bit, ADTS (ff f1 ...)
+
+- **Annex-B, confirmed.** Eight leading zero bytes then `00 00 00 01`.
+  Legal Annex-B padding; any parser skips it. (A naive check at byte 0
+  reads this as "no start code" — it is not.)
+- **Parameter sets ARE in-band on keyframes.** VPS and SPS ride inside
+  the I-frame. So a late subscriber decodes from the next keyframe with
+  no cache-and-reinject. This was the main risk and it is gone.
+- **Bitrate is ~190 Kbps.** 20KB keyframes, ~250-byte P-frames at 15fps.
+  We currently decode that and re-encode at megabits — we spend a CPU
+  core per camera to make the video both larger and worse.
+- **15fps, not 25.** `captureStream(25)` was oversampling.
+
+## The blocker we did not expect: H.265
+
+The camera emits HEVC. WebRTC carries VP8/VP9/H.264/AV1 broadly; H.265
+support is recent and uneven — WebKit has it, Chrome only behind flags.
+
+So byte-for-byte passthrough works for the iOS app and for the AI
+backend (ffmpeg decodes HEVC fine) but likely breaks the web app on
+Chrome. Which shapes the build:
+
+1. **See whether the camera can emit H.264** — per-stream or a device
+   setting. If yes, passthrough is clean everywhere and this is the
+   whole job. CHECK THIS FIRST; it is a five-minute answer that decides
+   between two days and a week.
+2. **Passthrough HEVC to iOS + backend, keep the canvas for web.** Most
+   of the saving, at the cost of two paths to maintain.
+3. **Transcode HEVC->H.264 outside the browser** (ffmpeg). Still far
+   cheaper than decode-render-capture-encode, and compatible with
+   everything.
+
+## Still open
+
+- **PPS (type 34)** was past the 64-byte capture window. Near-certain to
+  be there beside VPS and SPS, but confirm before relying on it.
+- **Audio is AAC in ADTS**, not the PCM the current tap assumes; the
+  audio path needs its own decision.
 - **Audio.** The same callback carries audio (`parse_audio_param`,
   `C = t.subarray(y.len)`), so the audio tap can follow the same route.
 - **Stability across SDK updates.** This is an internal callback. It is
