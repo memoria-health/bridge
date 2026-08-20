@@ -249,7 +249,26 @@ class RosterCache:
         for item in self.cameras:
             if item.get("livekit_identity") not in allowed:
                 continue
-            if self.settings["stream_mode"] == "continuous":
+            # An EXPLICIT disconnect always wins, in every mode.
+            #
+            # Continuous mode used to hardcode required=True and never
+            # look at desired_state, so a caregiver pressing disconnect
+            # in the app changed a database row and nothing else — the
+            # camera kept publishing. With bathroom/bedroom privacy in
+            # the product, a camera that ignores "off" is not a missing
+            # feature, it is a privacy failure.
+            #
+            # Continuous means "keep publishing even when nobody is
+            # watching", which is about viewer_count and ai_paused. It
+            # was never meant to override the off switch, and this
+            # module's own docstring calls desired_state the
+            # authoritative signal.
+            explicitly_off = (
+                str(item.get("desired_state", "")).lower() == "disconnected"
+            )
+            if explicitly_off:
+                required, reasons = False, ["backend_disconnected"]
+            elif self.settings["stream_mode"] == "continuous":
                 required, reasons = True, ["continuous_bridge"]
             else:
                 required, reasons = self.stream_policy(item)

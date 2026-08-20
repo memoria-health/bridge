@@ -53,6 +53,51 @@ HOOK = """
     } catch (e) { console.error("[spike] tap", e); }
   }
 
+  // Codec question, answered by the camera itself. getProductObjectModel()
+  // returns every settable property with its allowed values, so anything
+  // under Venc (video encoder) tells us the current codec AND whether
+  // H.264 is even offered. One button, because it needs a live login.
+  window.__dumpCodec = async function () {
+    try {
+      var model = await getProductObjectModel();
+      // Send EVERY property name. The codec is in here somewhere and
+      // guessing its name is what failed the first time.
+      var all = model.map(function (m) { return m.funCode; });
+      var hits = model.filter(function (m) {
+        var c = (m.funCode || "").toLowerCase();
+        return c.indexOf("venc") >= 0 || c.indexOf("codec") >= 0 ||
+               c.indexOf("compress") >= 0 || c.indexOf("encode") >= 0 ||
+               c.indexOf("video") >= 0 || c.indexOf("stream") >= 0 ||
+               c.indexOf("h26") >= 0 || c.indexOf("profile") >= 0;
+      }).map(function (m) {
+        return {
+          name: m.funCode,
+          range: (m.funContent && m.funContent.typeSpec &&
+                  m.funContent.typeSpec.range) || null
+        };
+      });
+      await fetch("/model", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({count: model.length, venc: hits, all: all})
+      });
+      console.info("[spike] codec model posted", hits);
+    } catch (e) {
+      console.error("[spike] dumpCodec failed", e);
+      fetch("/model", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({error: String(e)})}).catch(function(){});
+    }
+  };
+  window.addEventListener("load", function () {
+    var b = document.createElement("button");
+    b.textContent = "DUMP CODEC OPTIONS";
+    b.style.cssText = "position:fixed;top:8px;right:8px;z-index:99999;" +
+      "padding:10px 14px;background:#c00;color:#fff;border:0;" +
+      "border-radius:6px;font-weight:700;cursor:pointer";
+    b.onclick = window.__dumpCodec;
+    document.body.appendChild(b);
+  });
+
   // The SDK assigns ConnectApi.onrecvframeex ITSELF, after page load.
   // Wrapping the current value just gets overwritten a moment later, so
   // intercept the property instead: whatever the SDK installs, we see
@@ -143,6 +188,27 @@ async def spike(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def model(request: web.Request) -> web.Response:
+    d = await request.json()
+    if d.get("error"):
+        print(f"\n[model] FAILED: {d['error']}")
+        return web.json_response({"ok": False})
+    print(f"\n=== CAMERA PROPERTY MODEL ({d.get('count')} properties) ===")
+    hits = d.get("venc") or []
+    if not hits:
+        print("  no Venc/codec properties matched — dumping is still useful,")
+        print("  the camera may name them differently.")
+    for h in hits:
+        print(f"  {h['name']}")
+        print(f"      allowed: {h['range']}")
+    names = d.get("all") or []
+    if names:
+        print(f"\n--- ALL {len(names)} PROPERTY NAMES ---")
+        for n in sorted(names):
+            print(f"    {n}")
+    return web.json_response({"ok": True})
+
+
 async def ping(_r: web.Request) -> web.Response:
     print("[spike] page loaded from this harness — hook script is running")
     return web.json_response({"ok": True})
@@ -163,6 +229,7 @@ def main() -> None:
     app.router.add_get("/index.html", index)
     app.router.add_post("/spike", spike)
     app.router.add_get("/spike-ping", ping)
+    app.router.add_post("/model", model)
     app.router.add_static("/", SDK_DIR, show_index=False)
     print("open http://127.0.0.1:8099/  — log in, pick the camera, "
           "press the open-stream button")

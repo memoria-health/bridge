@@ -162,6 +162,48 @@
     canvas.width = config.capture_width;
     canvas.height = config.capture_height;
   }
+
+  // ── Encoded passthrough ────────────────────────────────────────
+  // The vendor hands us the encoded elementary stream on every frame
+  // (measured 2026-08-20: H.265, Annex-B, VPS+SPS in-band on
+  // keyframes, ~190 Kbps). Forward those bytes and the decode, the
+  // canvas and the re-encode all disappear — that is where the ~800MB
+  // and the CPU core per camera go.
+  //
+  // Off by default. When off, not a single byte of the path below
+  // changes, so the canvas route stays exactly as it shipped.
+  let naluSocket = null;
+  let naluDropped = 0;
+  if (config.passthrough) {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    naluSocket = new WebSocket(
+      `${proto}//${location.host}${apiBase}/nalu`);
+    naluSocket.binaryType = "arraybuffer";
+    naluSocket.onopen = () => report("passthrough_open", config.enc || "");
+    naluSocket.onclose = () => { naluSocket = null; report("passthrough_closed"); };
+    naluSocket.onerror = () => report("passthrough_error");
+  }
+
+  function forwardNalu(frameType, frameData) {
+    if (!naluSocket || naluSocket.readyState !== 1) return;
+    // Never let a stalled socket become unbounded browser memory —
+    // that is the failure the OOM work spent a day on. Drop instead,
+    // and say so.
+    if (naluSocket.bufferedAmount > 4 * 1024 * 1024) {
+      if ((naluDropped++ % 100) === 0) {
+        report("passthrough_backpressure", `dropped=${naluDropped}`);
+      }
+      return;
+    }
+    // 1-byte header: 1 = keyframe, 2 = delta. ffmpeg only needs the
+    // Annex-B bytes, but knowing which is which lets Python refuse to
+    // start a stream mid-GOP, where a decoder would produce garbage.
+    const body = new Uint8Array(frameData.byteLength + 1);
+    body[0] = frameType;
+    body.set(frameData, 1);
+    naluSocket.send(body);
+  }
+
   Player.init([canvas]);
   startAudioTap();
   // Capture at the camera's real rate. These stream 15fps (measured
@@ -172,6 +214,9 @@
   ConnectApi.onrecvframeex = function (...args) {
     const frameType = Number(args[1]);
     if (frameType === 1 || frameType === 2) {
+      // Forward BEFORE anything else: this is the cheap path and it
+      // must not inherit the cost of the expensive one.
+      forwardNalu(frameType, args[2]);
       receivedVideoFrames += 1;
       const now = Date.now();
       // Adopt the camera's OWN frame size on the first frame, so a
