@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import web
-from livekit import api
 
 from core import fleet, store
 from core.auth import require_local
@@ -44,18 +43,29 @@ class Bridge:
             stall_seconds=FRAME_STALL_SECONDS,
         )
 
-    def mint_token(self, identity: str, room: str) -> str:
-        """A LiveKit token for one of OUR publishers.
+    async def mint_token(self, identity: str, room: str) -> str:
+        """Ask the BACKEND for a token. We hold no signing secret.
 
-        In-process because the publisher is now in-process; the HTTP
-        route below stays for the runtime page and applies the same
-        check, that the backend currently wants this publisher.
+        Signing our own meant every bridge box carried the project-wide
+        LiveKit API secret, which mints a token for any room — that is,
+        any patient's live video — on a host whose whole job is talking
+        to a camera vendor. The gateway already refuses to do this; its
+        own comment says the box "must NOT fall back to signing its own,
+        because it no longer has a secret to sign with".
+
+        The backend checks that WE own the camera named by `identity` and
+        that `room` is that camera's own room, so a compromised bridge
+        can still only publish as its own cameras. Blocking urllib in a
+        thread, matching the poller's style: one short call per connect,
+        not a hot path.
         """
-        return (api.AccessToken(
-            self.settings["livekit_api_key"], self.settings["livekit_api_secret"])
-            .with_identity(identity).with_name(identity)
-            .with_grants(api.VideoGrants(room_join=True, room=room))
-            .to_jwt())
+        body = await asyncio.to_thread(
+            post_json,
+            f"{self.settings['backend_url']}/v1/livekit/token",
+            {"room": room, "identity": identity, "role": "gateway"},
+            {"Authorization": f"Bearer {self.settings['gateway_token']}"},
+        )
+        return body["token"]
 
     def plan(self) -> dict[str, Publisher | None]:
         return self.roster.plan(store.cameras())
@@ -134,22 +144,6 @@ class Bridge:
             "updated_at": self.roster.updated_at,
         })
 
-    async def token(self, request: web.Request) -> web.Response:
-        """Mint a LiveKit token, but only for a publisher the backend
-        currently wants. Otherwise this route is a way to join any room."""
-        require_local(request)
-        camera = store.find(request.match_info["camera_id"])
-        if not camera:
-            raise web.HTTPNotFound(text="camera not found")
-        body = await request.json()
-        identity = str(body.get("identity", ""))
-        room = str(body.get("room", ""))
-        spec = self.roster.publisher_for(camera)
-        if not spec or not spec.connected or (identity, room) != (spec.identity, spec.room):
-            raise web.HTTPForbidden(text="publisher is not desired/authorized")
-        return web.json_response({"url": self.settings["livekit_url"],
-                                  "token": self.mint_token(identity, room)})
-
     async def update_status(self, request: web.Request) -> web.Response:
         require_local(request)
         camera_id = request.match_info["camera_id"]
@@ -214,7 +208,6 @@ async def create_app(bridge: Bridge) -> web.Application:
     app.router.add_get("/api/cameras", bridge.cameras)
     app.router.add_post("/api/provision", bridge.provision)
     app.router.add_get("/api/runtime/{camera_id}/desired", bridge.desired)
-    app.router.add_post("/api/runtime/{camera_id}/token", bridge.token)
     app.router.add_post("/api/runtime/{camera_id}/status", bridge.update_status)
     # Vendor routes and static mounts go LAST: some vendor SDKs resolve
     # assets against the document root, so their catch-all must not

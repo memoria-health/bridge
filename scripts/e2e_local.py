@@ -63,8 +63,20 @@ async def run_stub() -> web.AppRunner:
             "camera_id": "e2e", "livekit_identity": IDENTITY,
             "livekit_room": ROOM, "online": True, **desired}]})
 
+    async def token(request: web.Request) -> web.Response:
+        """The backend mints every token now; the bridge holds no secret."""
+        from livekit import api
+        body = await request.json()
+        return web.json_response({"token": (
+            api.AccessToken("devkey", "secret")
+            .with_identity(body["identity"]).with_name(body["identity"])
+            .with_grants(api.VideoGrants(room_join=True, room=body["room"],
+                                         can_publish=True, can_subscribe=True))
+            .to_jwt())})
+
     app = web.Application()
     app.router.add_post("/v1/fleet/poll", poll)
+    app.router.add_post("/v1/livekit/token", token)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", STUB_PORT).start()
@@ -127,7 +139,6 @@ async def main() -> int:
     (workdir / "cameras.json").write_text(json.dumps({
         "backend_url": f"http://127.0.0.1:{STUB_PORT}",
         "livekit_url": args.livekit,
-        "livekit_api_key": "devkey", "livekit_api_secret": "secret",
         "poll_seconds": 2, "stream_mode": "policy",
     }))
     (workdir / "inventory.json").write_text(json.dumps({"version": 1, "cameras": [{
@@ -210,9 +221,15 @@ async def main() -> int:
                 for pub in p.track_publications.values()]
             results["_caregiver_publications"] = cg_state
             results["_detector_publications"] = ai_state
-            # A caregiver must not hold the MEDIA. A publication row is
-            # metadata the SFU always shares; a decoded track is not.
-            results["caregiver_cannot_see_private_camera"] = not any(
+            # NOT asserted: that a caregiver ALREADY subscribed loses the
+            # track. Publisher-side permissions gate new subscriptions and
+            # do not revoke existing ones, and the bridge deliberately does
+            # not republish to force it — that would drop the detector and
+            # the identity service too, blinding the AI to enforce a rule
+            # about human viewing. Cutting an existing caregiver is the
+            # backend's job (services/livekit_privacy.sever_caregiver_media),
+            # which this stub does not implement.
+            results["_caregiver_already_subscribed_keeps_track"] = any(
                 x["has_track"] for x in cg_state)
             # Does the rule hold for someone who arrives AFTER the
             # camera was marked private? That distinction decides whether
@@ -282,7 +299,7 @@ async def main() -> int:
     print(json.dumps(results, indent=2))
     required = ("publishes", "privacy_applied_live",
                 "ai_can_see_private_camera",
-                "caregiver_cannot_see_private_camera",
+                "late_caregiver_blocked",
                 "audio_toggles_both_ways",
                 "no_teardown_during_audio_toggle", "disconnect_stops_it")
     ok = all(results.get(k) for k in required)

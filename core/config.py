@@ -61,6 +61,10 @@ def _first(*names: str, default: str = "") -> str:
 def load_settings() -> dict[str, Any]:
     cfg = load_json(GATEWAY_CONFIG_PATH, {})
     identity = load_identity()
+    if cfg.get("livekit_api_secret"):
+        log("IGNORING livekit_api_secret in cameras.json: the backend mints "
+            "every token now. Delete the key — it is a project-wide signing "
+            "secret and nothing here needs it.")
     if cfg.get("gateway_token"):
         # Loud, because a copied cameras.json is exactly the shared
         # credential this replaced. Delete the key from the file.
@@ -71,9 +75,9 @@ def load_settings() -> dict[str, Any]:
         "backend_url": _first("BACKEND_URL") or cfg.get("backend_url", ""),
         "gateway_token": identity["token"],
         "livekit_url": _first("LIVEKIT_URL") or cfg.get("livekit_url", ""),
-        "livekit_api_key": _first("LIVEKIT_API_KEY") or cfg.get("livekit_api_key", ""),
-        "livekit_api_secret": (
-            _first("LIVEKIT_API_SECRET") or cfg.get("livekit_api_secret", "")),
+        # NOT the LiveKit API key/secret. The backend mints every token
+        # now, so no bridge host holds a project-wide signing secret. A
+        # value left in cameras.json is ignored; delete it.
         "poll_seconds": float(cfg.get("poll_seconds", 3)),
         # Cameras publish continuously so the AI can subscribe while the
         # caregiver's app is closed. "policy" only once the backend gives
@@ -85,7 +89,6 @@ def load_settings() -> dict[str, Any]:
 def validate_settings(settings: dict[str, Any]) -> None:
     missing = [key for key in (
         "backend_url", "gateway_token", "livekit_url",
-        "livekit_api_key", "livekit_api_secret",
     ) if not settings.get(key)]
     if missing:
         raise RuntimeError(f"missing gateway settings: {', '.join(missing)}")

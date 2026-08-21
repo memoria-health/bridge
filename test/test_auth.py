@@ -70,3 +70,28 @@ def test_credential_bearing_routes_stay_loopback_even_with_a_valid_key(monkeypat
     with pytest.raises(web.HTTPForbidden):
         auth.require_loopback(FakeRequest("100.71.4.9", {"x-bridge-key": "s3cret"}))
     auth.require_loopback(FakeRequest("127.0.0.1"))
+
+
+# ── the bridge holds no signing secret ────────────────────────────
+def test_the_bridge_requires_no_livekit_credentials(monkeypatch, tmp_path):
+    """Signing our own tokens meant every bridge host carried the
+    project-wide LiveKit secret, which mints a token for ANY room — that
+    is, any patient's live video — on a machine whose whole job is
+    talking to a camera vendor. The backend mints them now."""
+    from core import config
+    monkeypatch.setenv("BRIDGE_TOKEN", "ops-token")
+    settings = {"backend_url": "https://b", "gateway_token": "t",
+                "livekit_url": "wss://lk"}
+    config.validate_settings(settings)      # must not raise
+
+
+def test_a_livekit_secret_left_in_the_config_is_not_used(tmp_path, monkeypatch):
+    from core import config
+    monkeypatch.setenv("BRIDGE_TOKEN", "ops-token")
+    cfg = tmp_path / "cameras.json"
+    cfg.write_text('{"backend_url":"https://b","livekit_url":"wss://lk",'
+                   '"livekit_api_secret":"STALE-SECRET-DO-NOT-USE"}')
+    monkeypatch.setattr(config, "GATEWAY_CONFIG_PATH", cfg)
+    settings = config.load_settings()
+    assert "livekit_api_secret" not in settings
+    assert "STALE-SECRET-DO-NOT-USE" not in repr(settings)

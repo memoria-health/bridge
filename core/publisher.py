@@ -148,8 +148,11 @@ class CameraPublisher:
     async def _connect(self, spec: Publisher) -> None:
         room = self.room_factory()
         try:
-            await room.connect(self.livekit_url,
-                               self.token_for(spec.identity, spec.room))
+            # The token may be minted remotely, so this can be a
+            # coroutine; the fakes hand back a plain string.
+            token = await _maybe_await(
+                self.token_for(spec.identity, spec.room))
+            await room.connect(self.livekit_url, token)
             # BEFORE the track exists. Applying privacy after publishing
             # leaves a window in which a subscriber can auto-subscribe to
             # a bathroom camera — bounded by a subprocess spawn and a
