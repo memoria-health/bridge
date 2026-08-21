@@ -211,6 +211,38 @@ One Warner camera connection
 This avoids duplicate vendor-cloud decoding per resident assignment, although
 each LiveKit room still consumes outbound WebRTC bandwidth.
 
+## What a camera costs
+
+Measured 2026-08-21, not estimated. Two numbers that are not the same
+thing, and reporting the first as the second overstates a fleet badly.
+
+MARGINAL, per camera — this is what sets capacity:
+
+| stage | memory | CPU |
+|---|---|---|
+| Chromium renderer (P2P transport only) | 144 MB | 0.03 cores |
+| ffmpeg decode (2304x1296 H.265) | 246 MB | 0.11 cores |
+| LiveKit encode | (see below) | 0.28 cores |
+| **total** | **~385 MB** | **~0.42 cores** |
+
+SHARED, once per box: ~390 MB for the Chromium browser process, its GPU
+and network helpers, and the Playwright driver. These are one set
+however many cameras run; only the renderer scales.
+
+How they were measured. `scripts/validate_strip.py` runs the real page
+against a real camera and attributes RSS and CPU by process kind, which
+is what separates the two tables above. `scripts/measure_encode.py` runs
+the real publisher against a LOCAL LiveKit in dev mode with synthetic but
+MOVING frames — a static picture lets the encoder skip nearly all its
+work and understates the cost by an order of magnitude. The encode's
+memory is deliberately not quoted per camera: that run measures one
+process's peak RSS including the LiveKit FFI runtime, which is shared.
+
+At ~0.42 cores a six-core box holds roughly ten cameras with headroom,
+and memory is not the binding constraint. Before the browser was stripped
+to transport-only it was: the canvas route held a WASM decoder and a 3MP
+canvas per camera.
+
 ## Continuous operation
 
 The Python service and its headless Chromium workers must remain running. The
