@@ -103,11 +103,76 @@ async def test_the_camera_never_opens_an_audio_lane_nobody_wants():
 async def test_privacy_restricts_subscription_to_the_ai():
     p = build()
     await p.apply([pub(privacy=True)])
-    calls = fakes.FakeRoom.instances[0].local_participant.permission_calls
-    assert calls, "privacy_enabled must restrict subscription"
-    all_allowed, identities = calls[-1]
+    room = fakes.FakeRoom.instances[0]
+    room.remote_participants = {
+        "w": fakes.FakeRemote("detector_worker_abc"),
+        "c": fakes.FakeRemote("caregiver_alice"),
+    }
+    await p.apply([pub(privacy=True)])
+    all_allowed, identities = room.local_participant.permission_calls[-1]
     assert all_allowed is False
-    assert any("detector_worker" in i for i in identities)
+    assert identities == ("detector_worker_abc",)
+
+
+async def test_clearing_privacy_restores_everyone():
+    p = build()
+    await p.apply([pub(privacy=True)])
+    room = fakes.FakeRoom.instances[0]
+    await p.apply([pub(privacy=False)])
+    assert room.local_participant.permission_calls[-1][0] is True
+
+
+async def test_the_allow_list_is_real_participants_not_a_prefix_string():
+    """The bug inherited from runtime.js: it allow-listed the literal
+    string "detector_worker", which is not any participant's identity,
+    so a private camera was invisible to the AI as well as to people."""
+    p = build()
+    await p.apply([pub(privacy=True)])
+    room = fakes.FakeRoom.instances[0]
+    room.remote_participants = {
+        "a": fakes.FakeRemote("detector_worker_7f3a"),
+        "b": fakes.FakeRemote("caregiver_alice"),
+    }
+    await p.apply([pub(privacy=True)])
+    _, identities = room.local_participant.permission_calls[-1]
+    assert "detector_worker_7f3a" in identities
+    assert "detector_worker" not in identities
+
+
+async def test_the_identity_service_is_allowed_on_a_private_camera():
+    """It has its own prefix rather than a detector_worker_ name, because
+    the backend's zombie reaper kicks detector_worker_* it did not spawn.
+    Allow-listing only one prefix blinds it."""
+    p = build()
+    await p.apply([pub(privacy=True)])
+    room = fakes.FakeRoom.instances[0]
+    room.remote_participants = {"i": fakes.FakeRemote("identity-service-01")}
+    await p.apply([pub(privacy=True)])
+    _, identities = room.local_participant.permission_calls[-1]
+    assert "identity-service-01" in identities
+
+
+async def test_a_caregiver_is_never_allow_listed_on_a_private_camera():
+    p = build()
+    await p.apply([pub(privacy=True)])
+    room = fakes.FakeRoom.instances[0]
+    room.remote_participants = {"c": fakes.FakeRemote("caregiver_bob")}
+    await p.apply([pub(privacy=True)])
+    all_allowed, identities = room.local_participant.permission_calls[-1]
+    assert all_allowed is False
+    assert identities == ()
+
+
+async def test_an_ai_worker_joining_later_is_picked_up():
+    """Permissions are set before any subscriber exists, so a worker that
+    joins afterwards is allow-listed only if we re-assert."""
+    p = build()
+    await p.apply([pub(privacy=True)])
+    room = fakes.FakeRoom.instances[0]
+    assert room.local_participant.permission_calls[-1][1] == ()
+    room.remote_participants = {"a": fakes.FakeRemote("detector_worker_1")}
+    await p.apply([pub(privacy=True)])
+    assert room.local_participant.permission_calls[-1][1] == ("detector_worker_1",)
 
 
 async def test_privacy_is_reasserted_on_every_reconcile():

@@ -38,11 +38,19 @@ class FakeParticipant:
         self.permission_calls.append((all_allowed, identities))
 
 
+class FakeRemote:
+    def __init__(self, identity: str):
+        self.identity = identity
+
+
 class FakeRoom:
     instances: list["FakeRoom"] = []
 
     def __init__(self):
         self.local_participant = FakeParticipant()
+        # Who else is in the room. The privacy allow-list is built from
+        # these, so a subscriber that is not here cannot be allowed.
+        self.remote_participants: dict[str, FakeRemote] = {}
         self.connected_to: tuple[str, str] | None = None
         self.disconnected = False
         self.connect_raises = False

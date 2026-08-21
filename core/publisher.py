@@ -25,10 +25,12 @@ from typing import Any, Callable
 from core.util import log
 from vendors.base import Publisher
 
-# Only analysis workers may subscribe to a private camera. Matches the
-# gateway's allow-list; the app may still join the room and simply finds
-# nothing it is allowed to pull.
-AI_SUBSCRIBER_PREFIX = "detector_worker"
+# Only analysis workers may subscribe to a private camera. Two prefixes,
+# because the identity service deliberately does NOT use a
+# detector_worker_ name — the backend's startup zombie reaper kicks
+# detector_worker_* participants it did not spawn. Allow-listing one
+# prefix blinds the other.
+AI_SUBSCRIBER_PREFIXES = ("detector_worker_", "identity-service")
 
 
 class _Connection:
@@ -146,15 +148,28 @@ class CameraPublisher:
         await self._enforce_audio(connection)
 
     async def _enforce_privacy(self, connection: _Connection) -> None:
+        """Allow-list the AI participants ACTUALLY in the room.
+
+        LiveKit matches a permission entry by exact participant identity,
+        so a prefix string allow-lists nobody. `runtime.js` passed the
+        literal "detector_worker" and therefore made a private camera
+        invisible to the AI as well as to people. Rebuilt every pass,
+        which is also how a worker that joins later gets allowed.
+        """
         participant = connection.room.local_participant
         if connection.spec.privacy_enabled:
-            await participant.set_track_subscription_permissions(
-                False, [{"participantIdentity": AI_SUBSCRIBER_PREFIX,
-                         "allTracksAllowed": True}])
+            allowed = [
+                {"participantIdentity": remote.identity, "allTracksAllowed": True}
+                for remote in connection.room.remote_participants.values()
+                if remote.identity.startswith(AI_SUBSCRIBER_PREFIXES)
+            ]
+            await _maybe_await(
+                participant.set_track_subscription_permissions(False, allowed))
         else:
             # A camera that stops being private must stop being
             # restricted, or clearing the flag in the app does nothing.
-            await participant.set_track_subscription_permissions(True, [])
+            await _maybe_await(
+                participant.set_track_subscription_permissions(True, []))
         connection.privacy_applied = connection.spec.privacy_enabled
 
     async def _enforce_audio(self, connection: _Connection) -> None:
@@ -190,6 +205,16 @@ class CameraPublisher:
         if self._capturing:
             await self.source.stop()
             self._capturing = False
+
+
+async def _maybe_await(result: Any) -> Any:
+    """`set_track_subscription_permissions` is a synchronous FFI call in
+    the real SDK (the gateway calls it without await) and a coroutine in
+    the fakes. Awaiting a plain value would be a TypeError, so decide at
+    the call."""
+    if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+        return await result
+    return result
 
 
 def _default_track(kind: str, source: Any) -> Any:
