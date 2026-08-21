@@ -207,27 +207,41 @@ class WarnerSource:
     """
 
     def __init__(self, camera_id: str, enc: str = "H265", fps: int = 15,
-                 want_audio: bool = True):
+                 width: int = 2304, height: int = 1296):
         self.camera_id = camera_id
         self.enc = enc
         self.fps = fps
-        # The facilities audio kill and the per-patient toggle are decided
-        # upstream; when audio is not wanted we never even start the
-        # decoder, so there is no muted-but-open path to leak from.
-        self.want_audio = want_audio
+        self.width = width
+        self.height = height
         self.video = _Lane("video", camera_id, video_argv(enc, fps))
-        self.audio = _Lane("audio", camera_id, audio_argv()) if want_audio else None
+        # The facilities audio kill is decided upstream. When audio is
+        # not wanted the lane is never created, so there is no
+        # muted-but-open path to leak from.
+        self.audio: _Lane | None = None
         self.started = False        # seen a keyframe yet?
 
-    async def start(self) -> None:
+    async def start(self, want_audio: bool = True) -> None:
         await self.video.start()
-        if self.audio:
+        await self.set_audio(want_audio)
+
+    async def set_audio(self, enabled: bool) -> None:
+        """Open or cut the audio lane while video keeps running.
+
+        Its own ffmpeg process, so this never disturbs the picture — the
+        reason the lane was split out in the first place.
+        """
+        if enabled and self.audio is None:
+            self.audio = _Lane("audio", self.camera_id, audio_argv())
             await self.audio.start()
+            log.info("[%s] audio lane opened", self.camera_id)
+        elif not enabled and self.audio is not None:
+            lane, self.audio = self.audio, None
+            await lane.stop()
+            log.info("[%s] audio lane cut", self.camera_id)
 
     async def stop(self) -> None:
         await self.video.stop()
-        if self.audio:
-            await self.audio.stop()
+        await self.set_audio(False)
         self.started = False
 
     def offer(self, payload: bytes) -> None:

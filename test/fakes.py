@@ -74,6 +74,9 @@ class FakeSource:
         self.starts = 0
         self.stops = 0
         self.audio_wanted: list[bool] = []
+        # Every later change to the lane, so a test can prove audio can
+        # be opened or cut AFTER the capture is already running.
+        self.audio_state: list[bool] = []
         self._frames = list(frames or [b"frame-1", b"frame-2"])
         self._audio = [b"pcm-1"]
 
@@ -83,6 +86,9 @@ class FakeSource:
 
     async def stop(self) -> None:
         self.stops += 1
+
+    async def set_audio(self, enabled: bool) -> None:
+        self.audio_state.append(enabled)
 
     async def video_frames(self):
         for frame in self._frames:

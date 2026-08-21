@@ -69,6 +69,9 @@ class CameraPublisher:
         self.connection: _Connection | None = None
         self.frames_published = 0
         self._capturing = False
+        # What the SOURCE's audio lane is currently set to; None
+        # while not capturing.
+        self._audio_open: bool | None = None
 
     # ── reconcile ─────────────────────────────────────────────────
     async def apply(self, publisher: Publisher | None) -> None:
@@ -87,29 +90,36 @@ class CameraPublisher:
             await self._disconnect(
                 "no longer wanted" if wanted is None else "reassigned")
 
-        if wanted is None:
-            if self._capturing:
-                await self.source.stop()
-                self._capturing = False
+        # Connect BEFORE capturing. Starting the capture first meant that
+        # while LiveKit was unreachable, ffmpeg and the browser page were
+        # started and stopped on every 2s pass — thrash, and a camera
+        # that looks alive in `ps` while publishing nothing.
+        if wanted is not None and self.connection is None:
+            await self._connect(wanted)
+
+        if self.connection is None:
+            await self._stop_capture()
             return
 
         if not self._capturing:
             await self.source.start(want_audio=wanted.audio_capture_enabled)
+            self._audio_open = wanted.audio_capture_enabled
             self._capturing = True
-
-        if self.connection is None:
-            await self._connect(wanted)
 
         # EVERY pass, including when the room was already connected
         # before this call. Enforcement that happens once is not
         # enforcement.
-        if self.connection is not None:
-            self.connection.spec = wanted
-            await self._enforce(self.connection)
+        self.connection.spec = wanted
+        await self._enforce(self.connection)
 
-        if self.connection is None and self._capturing:
+        if self.connection is None:
+            await self._stop_capture()
+
+    async def _stop_capture(self) -> None:
+        if self._capturing:
             await self.source.stop()
             self._capturing = False
+            self._audio_open = None
 
     async def _connect(self, spec: Publisher) -> None:
         room = self.room_factory()
@@ -185,6 +195,18 @@ class CameraPublisher:
     async def _enforce_audio(self, connection: _Connection) -> None:
         wants = connection.spec.audio_capture_enabled
         participant = connection.room.local_participant
+        # Cut or open the lane in the SOURCE, not only the track. The
+        # kill is described as severed at the source, and a decoder
+        # still being fed the microphone is not severed. Opening it
+        # matters just as much: want_audio used to be decided once at
+        # capture start, so a site enabling audio later got a published
+        # track backed by a lane that was never opened — silent, and
+        # indistinguishable from working audio.
+        if wants != self._audio_open:
+            setter = getattr(self.source, "set_audio", None)
+            if setter is not None:
+                await setter(wants)
+            self._audio_open = wants
         if wants and connection.audio_track is None:
             if self.audio_source_factory is None:
                 return

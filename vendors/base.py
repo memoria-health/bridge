@@ -69,6 +69,42 @@ class EntityHealth:
         return bool(self.last_frame_at) and (now - self.last_frame_at) <= stall_seconds
 
 
+class FrameSource(ABC):
+    """Decoded frames out of one physical camera.
+
+    The whole of what a vendor has to supply. Everything else — which
+    room, what privacy, what audio state — is decided in `core/`.
+    """
+
+    width: int = 0
+    height: int = 0
+    fps: int = 0
+
+    @abstractmethod
+    async def start(self, want_audio: bool = True) -> None:
+        """Begin decoding. `want_audio=False` must not open an audio
+        lane at all: the kill means this site does not permit recording,
+        and a decoder being fed the microphone is not severed."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Stop decoding. Must tolerate being called twice."""
+
+    @abstractmethod
+    async def set_audio(self, enabled: bool) -> None:
+        """Open or cut the audio lane WHILE running.
+
+        Needed because the flag can change under a live camera in both
+        directions, and restarting the whole capture to honour it would
+        drop the picture a caregiver is watching.
+        """
+
+    @abstractmethod
+    def video_frames(self) -> Any:
+        """Async iterator of raw frames, in the pixel format the
+        publisher's video source expects."""
+
+
 class Vendor(ABC):
     """One camera brand. Everything brand-specific lives behind this."""
 

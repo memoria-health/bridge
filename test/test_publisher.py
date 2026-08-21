@@ -274,6 +274,60 @@ async def test_a_failed_connect_is_retried_on_the_next_reconcile():
     assert p.connection is not None
 
 
+async def test_the_camera_never_starts_while_livekit_is_unreachable():
+    """Starting the capture BEFORE a room is connected meant ffmpeg and
+    the browser page started and stopped on every 2s pass for as long as
+    LiveKit was down — thrash, and a camera that looks alive in ps while
+    publishing nothing."""
+    source = fakes.FakeSource()
+    p = build(source)
+
+    class Failing(fakes.FakeRoom):
+        def __init__(self):
+            super().__init__()
+            self.connect_raises = True
+
+    p.room_factory = Failing
+    for _ in range(3):
+        await p.apply(pub())
+    assert source.starts == 0
+    assert source.stops == 0
+
+
+# ── the audio lane, after the capture is already running ──────────
+async def test_turning_audio_on_later_opens_the_lane():
+    """want_audio was decided once, at capture start. A site that turned
+    audio on afterwards got a published audio track backed by a lane
+    that was never opened: silent, and indistinguishable from working
+    audio."""
+    source = fakes.FakeSource()
+    p = build(source)
+    await p.apply(pub(audio=False))
+    assert source.audio_wanted == [False]
+    await p.apply(pub(audio=True))
+    assert source.audio_state[-1] is True
+
+
+async def test_the_kill_cuts_the_lane_not_just_the_track():
+    """Unpublishing stops it reaching LiveKit; cutting the lane stops the
+    microphone being decoded at all. The backend calls this severed at
+    the source, and a decoder still being fed is not severed."""
+    source = fakes.FakeSource()
+    p = build(source)
+    await p.apply(pub(audio=True))
+    await p.apply(pub(audio=False))
+    assert source.audio_state[-1] is False
+
+
+async def test_an_unchanged_audio_flag_does_not_churn_the_lane():
+    """Re-applying every 2s must not restart a working decoder."""
+    source = fakes.FakeSource()
+    p = build(source)
+    for _ in range(4):
+        await p.apply(pub(audio=True))
+    assert source.audio_state == []
+
+
 async def test_reconnecting_does_not_start_a_second_capture():
     source = fakes.FakeSource()
     p = build(source)
