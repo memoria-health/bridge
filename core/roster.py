@@ -50,8 +50,13 @@ class Roster:
                 self.error = None
                 self.updated_at = time.time()
             except Exception as exc:  # noqa: BLE001 — a bad poll must not end the loop
+                # Log a CHANGE of error, not every occurrence. A bridge
+                # that has minted a token but not yet provisioned a
+                # camera 401s on every poll by design, and three lines a
+                # second of that buries whatever else goes wrong.
+                if str(exc) != self.error:
+                    log(f"roster poll failed: {exc}")
                 self.error = str(exc)
-                log(f"roster poll failed: {exc}")
             await asyncio.sleep(self.settings["poll_seconds"])
 
     @staticmethod

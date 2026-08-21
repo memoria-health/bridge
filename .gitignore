@@ -6,6 +6,8 @@ logs/*
 # inventory.json each camera's device key and admin password.
 cameras.json
 inventory.json
+# this bridge's own bearer token, minted on first run
+identity.json
 __pycache__/
 *.pyc
 *.zip

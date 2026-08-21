@@ -12,7 +12,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from core.util import load_json
+from core.identity import load_identity
+from core.util import load_json, log
 
 HERE = Path(__file__).resolve().parent.parent
 
@@ -52,9 +53,16 @@ def _first(*names: str, default: str = "") -> str:
 
 def load_settings() -> dict[str, Any]:
     cfg = load_json(GATEWAY_CONFIG_PATH, {})
+    identity = load_identity()
+    if cfg.get("gateway_token"):
+        # Loud, because a copied cameras.json is exactly the shared
+        # credential this replaced. Delete the key from the file.
+        log(f"IGNORING gateway_token in {GATEWAY_CONFIG_PATH.name}: this bridge "
+            f"uses its own minted token. Remove the key.")
     return {
+        "instance_id": identity["instance_id"],
         "backend_url": _first("BACKEND_URL") or cfg.get("backend_url", ""),
-        "gateway_token": _first("GATEWAY_TOKEN") or cfg.get("gateway_token", ""),
+        "gateway_token": identity["token"],
         "livekit_url": _first("LIVEKIT_URL") or cfg.get("livekit_url", ""),
         "livekit_api_key": _first("LIVEKIT_API_KEY") or cfg.get("livekit_api_key", ""),
         "livekit_api_secret": (
