@@ -21,7 +21,7 @@ from core.auth import require_local
 from core.config import FRAME_STALL_SECONDS, VERSION
 from core.roster import Roster
 from core.util import log, post_json
-from vendors.base import Vendor
+from vendors.base import Publisher, Vendor
 
 
 class Bridge:
@@ -57,7 +57,7 @@ class Bridge:
             .with_grants(api.VideoGrants(room_join=True, room=room))
             .to_jwt())
 
-    def plan(self) -> dict[str, list]:
+    def plan(self) -> dict[str, Publisher | None]:
         return self.roster.plan(store.cameras())
 
     async def run_vendor(self) -> None:
