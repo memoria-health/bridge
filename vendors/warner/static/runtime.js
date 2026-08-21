@@ -95,17 +95,17 @@
       await room.connect(auth.url, auth.token);
       const videoMedia = videoStream.getVideoTracks()[0].clone();
       videoTrack = new LivekitClient.LocalVideoTrack(videoMedia);
-      // Without an explicit bitrate LiveKit picks a conservative default
-      // for the track, which quietly undoes a higher capture resolution:
-      // more pixels at the same bitrate is just softer video. Scale the
-      // ceiling with the actual pixel count.
-      const px = (canvas.width || 1280) * (canvas.height || 720);
-      const maxBitrate = Math.round(
-        Math.min(8_000_000, Math.max(1_500_000, px * 2.0)));
+      // A ceiling, not a spend: the gateway's Tapo path allows 4 Mbps and
+      // an indoor room actually uses ~1.3. So this is sized to not bind
+      // during motion (when the detector and the caregiver both need the
+      // frames) while refusing the runaway a pixel-scaled ceiling gives
+      // on a 3MP sensor. LiveKit bills every published bit to every
+      // subscriber for the camera's whole life, and the detector
+      // subscribes 24/7.
       await room.localParticipant.publishTrack(videoTrack, {
         name: "warner-camera", source: LivekitClient.Track.Source.Camera,
         simulcast: false,
-        videoEncoding: { maxBitrate, maxFramerate: 25 }
+        videoEncoding: { maxBitrate: 2_000_000, maxFramerate: 15 }
       });
       // THE FACILITIES AUDIO KILL. `audio_capture_enabled=false` means
       // this site does not permit recording audio. The backend has sent

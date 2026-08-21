@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-APP_DIR="${APP_DIR:-/opt/memoria-warner-bridge}"
+APP_DIR="${APP_DIR:-/opt/memoria-bridge}"
 APP_USER="${APP_USER:-memoria}"
 if [ "$(id -u)" -ne 0 ]; then echo "Run with sudo: sudo bash scripts/install.sh" >&2; exit 1; fi
 if ! id "$APP_USER" >/dev/null 2>&1; then useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"; fi
@@ -17,7 +17,7 @@ if [ ! -f "$APP_DIR/cameras.json" ]; then
 fi
 mkdir -p "$APP_DIR/logs"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
-cp "$APP_DIR/deploy/memoria-warner-bridge.service" /etc/systemd/system/
+cp "$APP_DIR/deploy/memoria-bridge.service" /etc/systemd/system/
 systemctl daemon-reload
 echo "Installation complete. Edit cameras.json, then run:"
-echo "sudo systemctl enable --now memoria-warner-bridge"
+echo "sudo systemctl enable --now memoria-bridge"

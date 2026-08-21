@@ -1,5 +1,5 @@
 [Unit]
-Description=Memoria Warner Cloud to LiveKit bridge
+Description=Memoria camera bridge (vendor cameras into LiveKit)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,24 +7,24 @@ Wants=network-online.target
 Type=simple
 User=memoria
 Group=memoria
-WorkingDirectory=/opt/memoria-warner-bridge
-Environment=WARNER_SDK_DIR=/opt/memoria-warner-bridge/warner_sdk
-Environment=WARNER_GATEWAY_CONFIG=/opt/memoria-warner-bridge/cameras.json
-Environment=WARNER_BRIDGE_CONFIG=/opt/memoria-warner-bridge/warner_cameras.json
-Environment=WARNER_BRIDGE_ORIGIN=http://127.0.0.1:8090
-Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/memoria-warner-bridge/browsers
+WorkingDirectory=/opt/memoria-bridge
+Environment=BRIDGE_GATEWAY_CONFIG=/opt/memoria-bridge/cameras.json
+Environment=BRIDGE_INVENTORY=/opt/memoria-bridge/inventory.json
+Environment=BRIDGE_ORIGIN=http://127.0.0.1:8090
+Environment=BRIDGE_VENDOR=warner
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/memoria-bridge/browsers
 # Listen on loopback only. The admin/runtime API hands out camera
 # credentials and mints LiveKit publish tokens; reach it over the
 # tailnet (see below), never by binding a public interface.
-Environment=WARNER_BRIDGE_HOST=127.0.0.1
+Environment=BRIDGE_HOST=127.0.0.1
 # Remote access, defence in depth. BOTH are required for an off-box
 # caller: the shared secret proves who you are, the tailnet range
-# proves where you are. Drop WARNER_BRIDGE_KEY into an EnvironmentFile
+# proves where you are. Drop BRIDGE_KEY into an EnvironmentFile
 # (0600, root-owned) rather than inlining it here — unit files are
 # world-readable.
-# EnvironmentFile=/etc/memoria/bridge.env      # WARNER_BRIDGE_KEY=...
-Environment=WARNER_BRIDGE_ALLOW_TAILNET=1
-ExecStart=/opt/memoria-warner-bridge/.venv/bin/python /opt/memoria-warner-bridge/warner_bridge.py
+# EnvironmentFile=/etc/memoria/bridge.env      # BRIDGE_KEY=...
+Environment=BRIDGE_ALLOW_TAILNET=1
+ExecStart=/opt/memoria-bridge/.venv/bin/python /opt/memoria-bridge/bridge.py
 Restart=always
 RestartSec=3
 TimeoutStopSec=30
@@ -40,7 +40,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=/opt/memoria-warner-bridge
+ReadWritePaths=/opt/memoria-bridge
 
 [Install]
 WantedBy=multi-user.target

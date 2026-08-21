@@ -1,40 +1,34 @@
 #!/usr/bin/env python3
-"""Warner frame source — a drop-in for the gateway's RTSP puller.
+"""Warner frames and audio, decoded for `rtc.VideoSource`/`AudioSource`.
 
 WHY THIS SHAPE
 
-`nemara-gateway/publisher.py` already solves every hard part of getting
-a camera into LiveKit correctly: desired_state per publisher, the
-facilities audio kill, the bathroom/bedroom privacy sever re-asserted on
-every poll, a frame watchdog for stalls that never EOF, LiveKit
-reconnect, and fan-out of one physical stream to many patient rooms. It
-publishes from Python through `rtc.VideoSource` as an ordinary `cam_*`
-participant — no Ingress, and no new participant-identity plumbing for
-the webhooks and `room_reconciler` to trip over.
+`nemara-gateway/publisher.py` publishes from Python through
+`rtc.VideoSource` as an ordinary `cam_*` participant. That matters
+twice: no LiveKit Ingress (so no per-minute ingest bill), and no new
+participant identity for the webhooks and `room_reconciler` to trip
+over. We take that idea and nothing else — the gateway pulls RTSP, we
+cannot, because the vendor's transport is JS + WASM with no native SDK.
 
-The Warner bridge reimplemented none of that and got each piece wrong in
-a different way. So we do not write a second publisher; we give the
-existing one a different way to obtain frames.
+So the browser stays, but only as transport. It hands us the encoded
+frames the vendor SDK was already producing (ENCODED_PASSTHROUGH.md:
+H.265 Annex-B, VPS/SPS in-band on keyframes, ~190 Kbps, plus AAC in
+ADTS). Deleted per camera: a WASM HEVC decoder and its heap, a 3MP
+canvas and its rasterisation, and a browser WebRTC encoder. Added: one
+native ffmpeg decode. The encode moves to the LiveKit SDK.
 
-    gateway:  ffmpeg(rtsp)                  -> rawvideo -> rtc.VideoSource
-    warner:   browser(P2P) -> NALUs -> ffmpeg -> rawvideo -> rtc.VideoSource
+    browser (P2P only) --NALUs--> ffmpeg --raw--> rtc.VideoSource
+                       --ADTS---> ffmpeg --PCM--> rtc.AudioSource
 
-The browser stays ONLY because the vendor's cloud/P2P transport and auth
-are JS + WASM with no native SDK. It stops being a video pipeline: no
-`Player.init` rendering, no canvas, no `captureStream`, no WASM decoder.
-It receives P2P packets and hands us the encoded frames the SDK was
-already giving it (see ENCODED_PASSTHROUGH.md — measured H.265,
-Annex-B, VPS/SPS in-band on keyframes, ~190 Kbps).
+Video output is byte-identical to the gateway's `build_ffmpeg_cmd`
+(rawvideo, yuv420p, constant rate), so the frame reader, stall watchdog
+and motion sampling downstream are reused rather than re-derived.
 
-WHAT THAT DELETES, per camera: a WASM HEVC decoder and its heap, a 3MP
-canvas and its rasterisation, and a browser WebRTC encoder. What
-replaces them: one native ffmpeg decode. The encode moves to the LiveKit
-SDK, which is where the gateway already does it.
-
-The output contract is deliberately byte-identical to
-`build_ffmpeg_cmd`: rawvideo, yuv420p, constant rate on stdout. So the
-consumer loop, the stall watchdog and the motion sampling are reused
-unchanged rather than re-derived.
+WHY TWO PROCESSES, not one. Video and audio arrive as separate vendor
+callbacks with separate framing; muxing them into one ffmpeg input
+would mean inventing a container for no gain. Two pipes also means
+audio failing cannot take video with it — and video is the one a
+caregiver is watching.
 """
 from __future__ import annotations
 
@@ -45,33 +39,34 @@ import shutil
 log = logging.getLogger("warner.source")
 
 # Frame-type byte the runtime page prepends, matching the vendor's own
-# constants (PROC_FRAME_TYPE_IFRAME / _PFRAME).
+# constants (PROC_FRAME_TYPE_AUDIO / _IFRAME / _PFRAME).
+FRAME_AUDIO = 0
 FRAME_KEY = 1
 FRAME_DELTA = 2
 
-# Bound the hand-off queue. The identity OOM (2026-08-15) was unbounded
+# Bound the hand-off queues. The identity OOM (2026-08-15) was unbounded
 # stream queues; a live view wants the newest picture, so drop the
 # oldest rather than grow.
-MAX_QUEUED_FRAMES = 120
+MAX_QUEUED = 120
+
+# LiveKit wants 48kHz PCM. The camera emits 8kHz AAC, so ffmpeg
+# resamples on the way through — a few microseconds per packet.
+AUDIO_RATE = 48000
+AUDIO_CH = 1
 
 
-def build_ffmpeg_cmd(enc: str, fps: int) -> list[str]:
-    """Encoded frames on stdin, rawvideo on stdout.
+def video_argv(enc: str, fps: int) -> list[str]:
+    """Encoded video on stdin, rawvideo on stdout.
 
-    Mirrors the gateway's RTSP command in everything after the input, so
-    the frame reader downstream cannot tell the two sources apart.
+    Deliberately NOT `-fflags +nobuffer`. That flag is on the gateway's
+    AUDIO command and copying it here decoded exactly ZERO frames from a
+    raw elementary stream — measured, not guessed. It is safe on a
+    container carrying its own timing and wrong on a bare Annex-B pipe.
 
-    Deliberately NOT `-fflags +nobuffer`. That flag appears on the
-    gateway's AUDIO command, and copying it here produced exactly ZERO
-    decoded frames from a raw elementary stream — measured, not
-    guessed. It is safe on a container with its own timing and wrong on
-    a bare Annex-B pipe. `-flags low_delay` is fine and is kept.
-
-    `-fps_mode cfr` rather than the deprecated `-vsync cfr`: the vendor
-    hands us a millisecond timestamp per frame but no container timing,
-    and the publisher re-stamps presentation time from its own frame
-    counter anyway (`ts = self.frames * self.frame_us`), so a constant
-    output rate is what the consumer expects.
+    `-fps_mode cfr` rather than the deprecated `-vsync cfr`. The vendor
+    gives a millisecond stamp per frame but no container timing, and the
+    publisher re-stamps presentation time from its own frame counter, so
+    a constant output rate is what the consumer expects.
     """
     fmt = "hevc" if enc.upper().startswith("H265") else "h264"
     return [
@@ -83,45 +78,63 @@ def build_ffmpeg_cmd(enc: str, fps: int) -> list[str]:
     ]
 
 
-class WarnerSource:
-    """One physical Warner camera: NALUs in, decoded frames out.
+def audio_argv() -> list[str]:
+    """ADTS AAC on stdin, 48kHz mono s16le PCM on stdout.
 
-    Exposes `.proc` so the caller reads `proc.stdout` exactly as it
-    reads the RTSP ffmpeg's stdout today.
+    `-f aac` is the ADTS demuxer; the camera's packets start `ff f1`,
+    which is an ADTS sync word, so this is exactly the right reader.
+    """
+    return [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning",
+        "-flags", "low_delay",
+        "-f", "aac", "-i", "pipe:0",
+        "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH),
+        "-f", "s16le", "-",
+    ]
+
+
+class _Lane:
+    """One ffmpeg decode: bytes in on a queue, decoded bytes on stdout.
+
+    Failure is contained here. A lane that dies is reported and can be
+    restarted by the caller without disturbing its sibling.
     """
 
-    def __init__(self, camera_id: str, enc: str = "H265", fps: int = 15):
+    def __init__(self, name: str, camera_id: str, argv: list[str]):
+        self.name = name
         self.camera_id = camera_id
-        self.enc = enc
-        self.fps = fps
+        self.argv = argv
         self.proc: "asyncio.subprocess.Process | None" = None
-        self.started = False        # seen a keyframe yet?
-        self.frames_in = 0
-        self.frames_dropped = 0
-        self._queue: "asyncio.Queue[bytes]" = asyncio.Queue(
-            maxsize=MAX_QUEUED_FRAMES)
-        self._pump: "asyncio.Task | None" = None
+        self.fed = 0
+        self.dropped = 0
+        self._queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=MAX_QUEUED)
+        self._tasks: list[asyncio.Task] = []
+
+    @property
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.returncode is None
 
     async def start(self) -> None:
         if self.proc is not None:
             return
         if shutil.which("ffmpeg") is None:
             raise RuntimeError("ffmpeg not on PATH")
-        argv = build_ffmpeg_cmd(self.enc, self.fps)
-        log.info("[%s] decode start: %s", self.camera_id, " ".join(argv))
+        log.info("[%s/%s] %s", self.camera_id, self.name, " ".join(self.argv))
         self.proc = await asyncio.create_subprocess_exec(
-            *argv,
+            *self.argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        self._pump = asyncio.create_task(self._pump_stdin())
-        asyncio.create_task(self._drain_stderr())
+        self._tasks = [
+            asyncio.create_task(self._pump()),
+            asyncio.create_task(self._drain_stderr()),
+        ]
 
     async def stop(self) -> None:
-        if self._pump:
-            self._pump.cancel()
-            self._pump = None
+        for t in self._tasks:
+            t.cancel()
+        self._tasks = []
         if self.proc:
             try:
                 if self.proc.stdin and not self.proc.stdin.is_closing():
@@ -134,27 +147,14 @@ class WarnerSource:
                 except ProcessLookupError:
                     pass
             self.proc = None
-        self.started = False
 
-    def offer(self, payload: bytes) -> None:
-        """One framed message from the runtime page. Never blocks.
-
-        Refuses to begin mid-GOP: without the parameter sets and an IDR
-        the decoder emits garbage, and a caregiver seeing a corrupted
-        picture is worse than seeing none. VPS/SPS ride in-band on
-        keyframes here, so waiting for one costs at most a GOP.
-        """
-        if not payload:
-            return
-        frame_type, body = payload[0], payload[1:]
+    def offer(self, body: bytes) -> None:
+        """Never blocks. Drops the OLDEST under pressure — a live view
+        wants the newest picture, and a backlog is latency nobody asked
+        for."""
         if not body:
             return
-        if not self.started:
-            if frame_type != FRAME_KEY:
-                return
-            self.started = True
-            log.info("[%s] first keyframe — decoding", self.camera_id)
-        self.frames_in += 1
+        self.fed += 1
         try:
             self._queue.put_nowait(body)
         except asyncio.QueueFull:
@@ -163,12 +163,12 @@ class WarnerSource:
                 self._queue.put_nowait(body)
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 pass
-            self.frames_dropped += 1
-            if self.frames_dropped % 100 == 1:
-                log.warning("[%s] decode backlog, dropped=%d",
-                            self.camera_id, self.frames_dropped)
+            self.dropped += 1
+            if self.dropped % 100 == 1:
+                log.warning("[%s/%s] backlog, dropped=%d",
+                            self.camera_id, self.name, self.dropped)
 
-    async def _pump_stdin(self) -> None:
+    async def _pump(self) -> None:
         assert self.proc is not None and self.proc.stdin is not None
         try:
             while True:
@@ -178,7 +178,7 @@ class WarnerSource:
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — a dead decoder must not kill the loop
-            log.exception("[%s] decode stdin failed", self.camera_id)
+            log.exception("[%s/%s] stdin failed", self.camera_id, self.name)
 
     async def _drain_stderr(self) -> None:
         """ffmpeg's complaints are the only diagnosis when a stream will
@@ -189,17 +189,73 @@ class WarnerSource:
             async for line in self.proc.stderr:
                 text = line.decode(errors="replace").strip()
                 if text:
-                    log.warning("[%s] ffmpeg: %s", self.camera_id, text)
+                    log.warning("[%s/%s] ffmpeg: %s",
+                                self.camera_id, self.name, text)
         except Exception:  # noqa: BLE001
             pass
 
     def status(self) -> dict:
+        return {"alive": self.alive, "fed": self.fed,
+                "dropped": self.dropped, "queued": self._queue.qsize()}
+
+
+class WarnerSource:
+    """One physical camera: encoded in, decoded out.
+
+    `video.proc.stdout` and `audio.proc.stdout` are read exactly as the
+    gateway reads its RTSP ffmpeg's stdout.
+    """
+
+    def __init__(self, camera_id: str, enc: str = "H265", fps: int = 15,
+                 want_audio: bool = True):
+        self.camera_id = camera_id
+        self.enc = enc
+        self.fps = fps
+        # The facilities audio kill and the per-patient toggle are decided
+        # upstream; when audio is not wanted we never even start the
+        # decoder, so there is no muted-but-open path to leak from.
+        self.want_audio = want_audio
+        self.video = _Lane("video", camera_id, video_argv(enc, fps))
+        self.audio = _Lane("audio", camera_id, audio_argv()) if want_audio else None
+        self.started = False        # seen a keyframe yet?
+
+    async def start(self) -> None:
+        await self.video.start()
+        if self.audio:
+            await self.audio.start()
+
+    async def stop(self) -> None:
+        await self.video.stop()
+        if self.audio:
+            await self.audio.stop()
+        self.started = False
+
+    def offer(self, payload: bytes) -> None:
+        """One framed message from the runtime page: type byte + body."""
+        if not payload:
+            return
+        kind, body = payload[0], payload[1:]
+        if not body:
+            return
+        if kind == FRAME_AUDIO:
+            if self.audio:
+                self.audio.offer(body)
+            return
+        # Never begin mid-GOP. Without the parameter sets and an IDR the
+        # decoder emits garbage, and a caregiver seeing a corrupted
+        # picture is worse than seeing none. VPS/SPS ride in-band on
+        # keyframes here, so waiting costs at most one GOP.
+        if not self.started:
+            if kind != FRAME_KEY:
+                return
+            self.started = True
+            log.info("[%s] first keyframe — decoding", self.camera_id)
+        self.video.offer(body)
+
+    def status(self) -> dict:
         return {
-            "running": self.proc is not None and self.proc.returncode is None,
+            "enc": self.enc, "fps": self.fps,
             "started_on_keyframe": self.started,
-            "enc": self.enc,
-            "fps": self.fps,
-            "frames_in": self.frames_in,
-            "frames_dropped": self.frames_dropped,
-            "queued": self._queue.qsize(),
+            "video": self.video.status(),
+            "audio": self.audio.status() if self.audio else None,
         }

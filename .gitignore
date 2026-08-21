@@ -2,8 +2,10 @@
 browsers/
 logs/*
 !logs/.gitkeep
+# Both hold live credentials: cameras.json the backend/LiveKit secrets,
+# inventory.json each camera's device key and admin password.
 cameras.json
-warner_cameras.json
+inventory.json
 __pycache__/
 *.pyc
 *.zip

@@ -5,7 +5,7 @@ systemctl status memoria-warner-bridge --no-pager || true
 echo "=== Port 8090 ==="
 ss -ltnp | grep ':8090' || true
 echo "=== Processes ==="
-pgrep -af 'warner_bridge|chromium|playwright' || true
+pgrep -af 'bridge.py|chromium|playwright' || true
 echo "=== Health ==="
 curl --silent --show-error http://127.0.0.1:8090/api/health || true
 echo

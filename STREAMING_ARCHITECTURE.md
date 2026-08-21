@@ -69,7 +69,7 @@ single-channel camera.
 Python calls the Nemara endpoint `/v1/gateway/provision-camera` using the
 gateway bearer token. The backend creates/returns room-scoped camera identities.
 The bridge persists the physical camera and returned identities in
-`warner_cameras.json`.
+`inventory.json`.
 
 ### Backend roster
 
@@ -204,7 +204,7 @@ CPU, RAM and both inbound and outbound bandwidth.
 ## Security boundaries
 
 - `cameras.json` contains LiveKit server credentials and the gateway token.
-- `warner_cameras.json` contains Warner device secrets and camera passwords.
+- `inventory.json` contains Warner device secrets and camera passwords.
 - Both files must be readable only by the service account.
 - Port 8090 must be limited to an administrator LAN/VPN and never exposed
   directly to the public Internet.

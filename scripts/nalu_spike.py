@@ -27,7 +27,7 @@ from pathlib import Path
 from aiohttp import web
 
 HERE = Path(__file__).resolve().parent.parent
-SDK_DIR = HERE / "warner_sdk"
+SDK_DIR = HERE / "vendors" / "warner" / "sdk"
 
 HOOK = """
 <script>
