@@ -52,6 +52,19 @@ class AudioSource:
             num_channels=AUDIO_CHANNELS, samples_per_channel=samples))
 
 
+def permission(identity: str) -> Any:
+    """One allow-list entry, in the type the SDK actually wants.
+
+    A dict is silently wrong: the call is keyword-only and takes
+    `ParticipantTrackPermission` objects, so passing dicts positionally
+    raised on every private camera. `allow_all` covers both the video and
+    the audio track for that participant.
+    """
+    from livekit import rtc
+    return rtc.ParticipantTrackPermission(
+        participant_identity=identity, allow_all=True)
+
+
 def track(kind: str, source: Any) -> Any:
     """A LiveKit track over one of the adapters above.
 

@@ -36,6 +36,7 @@ def build(source=None) -> CameraPublisher:
         video_source_factory=fakes.FakeVideoSource,
         audio_source_factory=fakes.FakeAudioSource,
         track_factory=lambda kind, _source: fakes.FakeTrack(kind),
+        permission_factory=fakes.FakePermission,
     )
 
 
@@ -439,3 +440,26 @@ async def test_publishing_a_frame_is_what_proves_the_chain_works():
     assert p.last_published_at == 0.0
     await p.pump()
     assert p.last_published_at > 0.0
+
+
+async def test_teardown_survives_a_track_without_stop():
+    """The Python SDK's LocalVideoTrack has no stop(); that is a browser
+    idiom. Calling it unconditionally raised inside teardown, after the
+    room disconnect had already happened — leaving the publisher
+    half-torn-down with its connection already cleared."""
+    class NoStop:
+        def __init__(self, kind):
+            self.kind = kind
+
+    p = CameraPublisher(
+        camera_id="warner_abc", source=fakes.FakeSource(),
+        livekit_url="wss://test", token_for=lambda i, r: "t",
+        room_factory=fakes.FakeRoom,
+        video_source_factory=fakes.FakeVideoSource,
+        audio_source_factory=fakes.FakeAudioSource,
+        track_factory=lambda kind, _s: NoStop(kind),
+        permission_factory=fakes.FakePermission,
+    )
+    await p.apply(pub())
+    await p.close()
+    assert p.connection is None

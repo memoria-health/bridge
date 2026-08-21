@@ -59,6 +59,7 @@ class CameraPublisher:
         video_source_factory: Callable[[int, int], Any],
         audio_source_factory: Callable[[], Any] | None = None,
         track_factory: Callable[[str, Any], Any] | None = None,
+        permission_factory: Callable[[str], Any] | None = None,
     ):
         self.camera_id = camera_id
         self.source = source
@@ -68,6 +69,7 @@ class CameraPublisher:
         self.video_source_factory = video_source_factory
         self.audio_source_factory = audio_source_factory
         self.track_factory = track_factory or _default_track
+        self.permission_factory = permission_factory or _default_permission
         self.connection: _Connection | None = None
         # Observed effect, for the fleet report. Empty until something
         # has actually been applied.
@@ -164,8 +166,15 @@ class CameraPublisher:
         except Exception:  # noqa: BLE001 — already gone
             pass
         for track in (connection.video_track, connection.audio_track):
-            if track is not None:
-                track.stop()
+            # `stop()` is a browser-SDK idiom; the Python SDK's
+            # LocalVideoTrack has no such method and releases with the
+            # room. Calling it unconditionally raised inside teardown,
+            # which is the worst place to raise — the room disconnect
+            # above had already happened, so the publisher was left
+            # half-torn-down with self.connection cleared.
+            stop = getattr(track, "stop", None)
+            if callable(stop):
+                stop()
         log(f"[{self.camera_id}] stopped {identity}: {why}")
 
     # ── the two safety flags ──────────────────────────────────────
@@ -225,17 +234,22 @@ class CameraPublisher:
         participant = room.local_participant
         if spec.privacy_enabled:
             allowed = [
-                {"participantIdentity": remote.identity, "allTracksAllowed": True}
+                self.permission_factory(remote.identity)
                 for remote in room.remote_participants.values()
                 if remote.identity.startswith(AI_SUBSCRIBER_PREFIXES)
             ]
-            await _maybe_await(
-                participant.set_track_subscription_permissions(False, allowed))
+            # KEYWORDS. The SDK call is keyword-only, so the positional
+            # form raised a TypeError on every private camera — which
+            # this code turns into a tear-down, so a bathroom camera
+            # published nothing at all rather than publishing wrongly.
+            # Safe direction, still completely broken.
+            await _maybe_await(participant.set_track_subscription_permissions(
+                allow_all_participants=False, participant_permissions=allowed))
         else:
             # A camera that stops being private must stop being
             # restricted, or clearing the flag in the app does nothing.
-            await _maybe_await(
-                participant.set_track_subscription_permissions(True, []))
+            await _maybe_await(participant.set_track_subscription_permissions(
+                allow_all_participants=True, participant_permissions=[]))
 
     async def _enforce_audio(self, connection: _Connection) -> None:
         wants = connection.spec.audio_capture_enabled
@@ -252,7 +266,9 @@ class CameraPublisher:
         # through pump_audio, because the track is still published.
         if not wants and connection.audio_track is not None:
             await participant.unpublish_track(connection.audio_track)
-            connection.audio_track.stop()
+            stop = getattr(connection.audio_track, "stop", None)
+            if callable(stop):
+                stop()
             connection.audio_track = None
             connection.audio_source = None
         if wants != self._audio_open:
@@ -319,6 +335,11 @@ async def _maybe_await(result: Any) -> Any:
     if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
         return await result
     return result
+
+
+def _default_permission(identity: str) -> Any:
+    from core.livekit_adapters import permission
+    return permission(identity)
 
 
 def _default_track(kind: str, source: Any) -> Any:

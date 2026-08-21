@@ -36,12 +36,30 @@ class FakeParticipant:
         self.order.append("unpublish")
         self.unpublished.append(track)
 
-    async def set_track_subscription_permissions(self, all_allowed, perms=None):
+    async def set_track_subscription_permissions(
+        self, *, allow_all_participants, participant_permissions=None,
+    ):
+        """KEYWORD-ONLY, matching the real SDK.
+
+        The earlier fake accepted positional arguments and dicts, so it
+        happily recorded a call that raises TypeError against LiveKit —
+        every private camera, every time. A fake that is more permissive
+        than the thing it stands in for cannot catch that.
+        """
         if self.permissions_raise:
             raise RuntimeError("livekit refused the permission update")
         self.order.append("permissions")
-        identities = tuple(p["participantIdentity"] for p in (perms or []))
-        self.permission_calls.append((all_allowed, identities))
+        identities = tuple(p.participant_identity
+                           for p in (participant_permissions or []))
+        self.permission_calls.append((allow_all_participants, identities))
+
+
+class FakePermission:
+    """Stands in for rtc.ParticipantTrackPermission."""
+
+    def __init__(self, participant_identity: str, allow_all: bool = True):
+        self.participant_identity = participant_identity
+        self.allow_all = allow_all
 
 
 class FakeRemote:
