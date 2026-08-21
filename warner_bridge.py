@@ -277,6 +277,23 @@ class RosterCache:
                 "room": item["livekit_room"],
                 "desired_state": "connected" if required else "disconnected",
                 "stream_reasons": reasons,
+                # Two safety flags the backend has sent on every poll
+                # since 2026-07-28 and this bridge simply dropped.
+                #
+                # audio_capture_enabled=false is the facilities audio
+                # kill — sites where recording audio is not permitted.
+                # The backend's own comment says it is "severed at the
+                # source so nothing downstream can leak it"; we were the
+                # source, and we were not severing it.
+                #
+                # privacy_enabled marks a bathroom/bedroom camera. The
+                # gateway restricts those to detector_worker_* so the
+                # AI can see them and people cannot. Defaults here are
+                # the SAFE ones, so a roster that omits a field (older
+                # backend) errs toward privacy rather than away.
+                "audio_capture_enabled": bool(
+                    item.get("audio_capture_enabled", False)),
+                "privacy_enabled": bool(item.get("privacy_enabled", True)),
             })
         return desired
 

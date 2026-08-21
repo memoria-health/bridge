@@ -107,11 +107,40 @@
         simulcast: false,
         videoEncoding: { maxBitrate, maxFramerate: 25 }
       });
-      const audioMedia = audioDestination.stream.getAudioTracks()[0].clone();
-      audioTrack = new LivekitClient.LocalAudioTrack(audioMedia);
-      await room.localParticipant.publishTrack(audioTrack, {
-        name: "warner-camera-audio", source: LivekitClient.Track.Source.Microphone
-      });
+      // THE FACILITIES AUDIO KILL. `audio_capture_enabled=false` means
+      // this site does not permit recording audio. The backend has sent
+      // this on every roster poll since 2026-07-28 and described it as
+      // "severed at the source"; we were the source and we published
+      // anyway. Not publishing the track at all is the severing — a
+      // muted track still opens a microphone path.
+      if (spec.audio_capture_enabled) {
+        const audioMedia = audioDestination.stream.getAudioTracks()[0].clone();
+        audioTrack = new LivekitClient.LocalAudioTrack(audioMedia);
+        await room.localParticipant.publishTrack(audioTrack, {
+          name: "warner-camera-audio", source: LivekitClient.Track.Source.Microphone
+        });
+      } else {
+        await report("audio_suppressed", `${spec.identity} facilities kill`);
+      }
+
+      // BATHROOM/BEDROOM PRIVACY. A private camera is for the AI, not
+      // for people: restrict subscription to detector_worker_* so the
+      // caregiver app cannot pull the track even though it may join the
+      // room. Enforced publisher-side, which is the only place it
+      // cannot be argued with.
+      if (spec.privacy_enabled) {
+        try {
+          await room.localParticipant.setTrackSubscriptionPermissions(false, [
+            { participantIdentity: "detector_worker", allTracksAllowed: true }
+          ]);
+          await report("privacy_restricted", spec.identity);
+        } catch (e) {
+          // Failing open here would publish a bathroom camera to every
+          // subscriber in the room. Tear the publisher down instead.
+          await report("privacy_enforce_failed", String(e));
+          throw e;
+        }
+      }
       publishers.set(spec.identity, { room, videoTrack, audioTrack, roomName: spec.room });
       await report("publishing", `${spec.identity} -> ${spec.room}`);
     } catch (error) {
