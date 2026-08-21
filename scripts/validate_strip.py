@@ -84,16 +84,28 @@ def rss_breakdown(pids: list[int]) -> dict[str, int]:
         else:
             kind = "other"
         totals[kind] = totals.get(kind, 0) + kb
-        # Cumulative CPU seconds, which is what sets cameras-per-box now
-        # that the canvas and the WASM decoder are gone.
-        mm, _, ss = cpu_time.rpartition(":")
-        try:
-            seconds = int(float(mm or 0)) * 60 + float(ss)
-        except ValueError:
-            seconds = 0.0
-        totals["cpu_s:" + kind] = max(
-            totals.get("cpu_s:" + kind, 0), int(seconds * 100))
+        # SUMMED, like RSS. Taking the max counted only the busiest of
+        # the several processes that share a kind — chromium_helper
+        # covers the GPU, network and utility processes — so shared CPU
+        # was understated, and the two fields meant different things.
+        totals["cpu_s:" + kind] = (
+            totals.get("cpu_s:" + kind, 0) + int(_cpu_seconds(cpu_time) * 100))
     return totals
+
+
+def _cpu_seconds(value: str) -> float:
+    """`ps -o time=` is MM:SS, and HH:MM:SS once a process passes an
+    hour — which every soak does. The two-field parse silently returned
+    0.0 for exactly the runs that matter most."""
+    parts = value.strip().split(":")
+    try:
+        numbers = [float(p) for p in parts]
+    except ValueError:
+        return 0.0
+    seconds = 0.0
+    for n in numbers:
+        seconds = seconds * 60 + n
+    return seconds
 
 
 def descendants(pid: int, depth: int = 0) -> list[int]:
@@ -112,13 +124,20 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=float, default=30)
     ap.add_argument("--device-key", default=os.environ.get("WARNER_DEVICE_KEY", ""))
-    ap.add_argument("--camera-password", default=os.environ.get("WARNER_CAMERA_PASSWORD", ""))
+    # Deliberately env-only: a password on the command line is visible
+    # in `ps` and lands in shell history.
     ap.add_argument("--camera-user", default=os.environ.get("WARNER_CAMERA_USER", "admin"))
     ap.add_argument("--channel", type=int, default=0)
-    ap.add_argument("--stream-id", type=int, default=0)
+    # 1 = MAIN. Stream 0 is the 800x448 sub feed. The fourth place this
+    # default was wrong: 81eda76 fixed the admin form and the example
+    # config, 72f4fcc fixed three Python fallbacks, and this harness —
+    # added by 72f4fcc itself — still claimed main-stream dimensions
+    # while asking for the sub stream.
+    ap.add_argument("--stream-id", type=int, default=1)
     ap.add_argument("--width", type=int, default=2304)
     ap.add_argument("--height", type=int, default=1296)
     args = ap.parse_args()
+    args.camera_password = os.environ.get("WARNER_CAMERA_PASSWORD", "")
     if not args.device_key:
         print("need --device-key productId:deviceId:deviceSecret "
               "(or WARNER_DEVICE_KEY)", file=sys.stderr)
@@ -142,6 +161,13 @@ async def main() -> int:
     async def status(request):
         body = await request.json()
         state["reports"].append(body.get("state"))
+        detail = str(body.get("detail", ""))
+        if body.get("state") == "frame_heartbeat" and "x" in detail:
+            # The camera's OWN size, which the page reports and this used
+            # to discard. Without comparing it, asking for the sub stream
+            # still prints PASS while the RSS and CPU numbers describe an
+            # 800x448 workload presented as the 3MP per-camera cost.
+            state["reported_size"] = detail.split()[0]
         print(f"  page: {body.get('state')} {body.get('detail', '')}")
         return web.json_response({"ok": True})
 
@@ -151,6 +177,8 @@ async def main() -> int:
         print("  frame socket open")
         async for message in socket:
             if message.type != web.WSMsgType.BINARY:
+                continue
+            if not message.data:
                 continue
             kind = message.data[0]
             if kind == 0:
@@ -234,12 +262,22 @@ async def main() -> int:
             v for k, v in peak.items()
             if k.startswith("cpu_s:") and k.endswith("PER_CAMERA"))
             / 100 / args.seconds, 2),
+        "camera_reported_size": state.get("reported_size"),
         "page_states": state["reports"],
     }, indent=2))
     # The whole point: frames must arrive WITHOUT Player.init, and must
     # survive the decoder.
-    ok = state["frames_in"] > 0 and decoded > 0
-    print("PASS" if ok else "FAIL: no frames arrived or none decoded")
+    wanted_size = f"{args.width}x{args.height}"
+    got_size = state.get("reported_size")
+    size_ok = got_size in (None, wanted_size)
+    ok = state["frames_in"] > 0 and decoded > 0 and size_ok
+    if not size_ok:
+        print(f"FAIL: camera is sending {got_size}, not the {wanted_size} "
+              f"these numbers claim to describe (wrong --stream-id?)")
+    elif not ok:
+        print("FAIL: no frames arrived or none decoded")
+    else:
+        print("PASS")
     return 0 if ok else 1
 
 
