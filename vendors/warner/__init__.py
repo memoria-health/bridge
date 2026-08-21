@@ -300,6 +300,10 @@ class WarnerVendor(Vendor):
                 if message.type == web.WSMsgType.BINARY:
                     source.offer(message.data)
         finally:
+            # The stall watchdog recreates the PAGE, not the source, so
+            # without this the next session resumed mid-GOP into a
+            # decoder holding references the camera had already dropped.
+            source.require_keyframe()
             log(f"[{camera_id}] frame socket closed")
         return socket
 

@@ -161,6 +161,13 @@ class ChromiumSupervisor:
         state = str(body.get("state", "unknown"))[:80]
         if state == "frame_heartbeat":
             health.last_frame_at = now
+            # KEEP the detail. On a heartbeat it is "2304x1296 H265" —
+            # the size and codec the vendor SDK actually delivered, which
+            # is the only place the real workload is reported and the
+            # string that caught the sub-stream bug on 2026-08-21.
+            # Assigning it in the else branch alone threw it away on
+            # every heartbeat and kept a stale connect-time message.
+            health.detail = str(body.get("detail", ""))[:500]
             try:
                 health.frame_count = max(
                     health.frame_count, int(body.get("frame_count", 0)))
