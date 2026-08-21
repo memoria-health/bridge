@@ -170,9 +170,7 @@ class Bridge:
         list, and an open endpoint that returns one hands over a roster
         of who we watch.
         """
-        now = time.time()
         configured = store.cameras()
-        health = self.vendor.health()
         summary = {
             "ok": self.roster.error is None,
             "vendor": self.vendor.name,
@@ -196,23 +194,12 @@ class Bridge:
             # Per ENTITY, never per process: one row per camera, so a
             # camera whose worker died ten minutes ago cannot hide behind
             # the fact that the bridge itself is still alive.
-            "entities": {
-                cid: {
-                    "state": h.state,
-                    "detail": h.detail,
-                    "healthy": h.healthy(now, FRAME_STALL_SECONDS),
-                    "updated_at": h.updated_at,
-                    "last_frame_at": h.last_frame_at or None,
-                    "frame_age_seconds": (
-                        round(max(0.0, now - h.last_frame_at), 1)
-                        if h.last_frame_at else None),
-                    "frame_count": h.frame_count,
-                    "restarts": h.restarts,
-                    "last_restart_at": h.last_restart_at or None,
-                    "applied": h.applied,
-                }
-                for cid, h in health.items()
-            },
+            #
+            # The SAME rows the fleet poll sends. Building them twice
+            # would let the local view and the backend's view disagree
+            # about a camera, which is the exact confusion this endpoint
+            # exists to resolve.
+            "entities": self.fleet_report()["entities"],
         })
 
 
