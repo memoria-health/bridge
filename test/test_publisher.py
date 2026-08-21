@@ -189,11 +189,14 @@ async def test_privacy_is_reasserted_on_every_reconcile():
     assert len(calls) >= 3
 
 
-async def test_privacy_turned_on_mid_stream_applies_without_reconnecting():
+async def test_privacy_turned_on_mid_stream_takes_effect_immediately():
+    """This used to assert the room was NOT reconnected, which encoded
+    the leak: permissions gate new subscriptions only, so leaving the
+    publication in place left everyone already watching still watching."""
     p = build()
     await p.apply(pub(privacy=False))
-    room = fakes.FakeRoom.instances[0]
     await p.apply(pub(privacy=True))
+    room = fakes.FakeRoom.instances[-1]
     assert room.disconnected is False
     assert room.local_participant.permission_calls[-1][0] is False
 
@@ -465,3 +468,36 @@ async def test_teardown_survives_a_track_without_stop():
     await p.apply(pub())
     await p.close()
     assert p.connection is None
+
+
+async def test_a_camera_becoming_private_republishes():
+    """set_track_subscription_permissions gates NEW subscriptions and
+    does NOT revoke existing ones — measured against a real SFU. So a
+    room reclassified as a bathroom while a caregiver is watching kept
+    streaming to them. A new publication drops every subscription to the
+    old track; the permission set then gates who may take up the new."""
+    p = build()
+    await p.apply(pub(privacy=False))
+    first = fakes.FakeRoom.instances[0]
+    await p.apply(pub(privacy=True))
+    assert first.disconnected is True, "the old publication must be dropped"
+    assert len(fakes.FakeRoom.instances) == 2
+    assert p.connection is not None
+    assert p.applied["privacy_enabled"] is True
+
+
+async def test_a_camera_that_is_already_private_does_not_republish():
+    """Republishing on every pass would drop the picture every 2s."""
+    p = build()
+    await p.apply(pub(privacy=True))
+    await p.apply(pub(privacy=True))
+    await p.apply(pub(privacy=True))
+    assert len(fakes.FakeRoom.instances) == 1
+
+
+async def test_privacy_being_cleared_does_not_republish():
+    """Going public is not a leak; nobody needs dropping."""
+    p = build()
+    await p.apply(pub(privacy=True))
+    await p.apply(pub(privacy=False))
+    assert len(fakes.FakeRoom.instances) == 1

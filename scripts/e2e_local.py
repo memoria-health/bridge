@@ -71,6 +71,19 @@ async def run_stub() -> web.AppRunner:
     return runner
 
 
+async def join_as(identity: str, url: str):
+    """A real subscriber in the room, so the privacy rule can be checked
+    at the SFU instead of being taken on trust."""
+    from livekit import api, rtc
+    room = rtc.Room()
+    token = (api.AccessToken("devkey", "secret")
+             .with_identity(identity).with_name(identity)
+             .with_grants(api.VideoGrants(room_join=True, room=ROOM))
+             .to_jwt())
+    await room.connect(url, token, rtc.RoomOptions(auto_subscribe=True))
+    return room
+
+
 async def health(session: ClientSession) -> dict:
     try:
         async with session.get(
@@ -159,6 +172,15 @@ async def main() -> int:
             baseline_restarts = entity.get("restarts", 0)
 
             # 2. privacy, applied live rather than at the next reconnect.
+            #
+            # A detector joins FIRST, because the allow-list is built
+            # from the participants actually in the room. Without one the
+            # call succeeds against an empty list, which proves the call
+            # shape and nothing about the rule — and the rule is the
+            # whole point: a private camera must stay visible to the AI
+            # while being invisible to caregivers.
+            detector = await join_as("detector_worker_e2e", args.livekit)
+            caregiver = await join_as("caregiver_e2e", args.livekit)
             desired["privacy_enabled"] = True
             entity = await wait_for(
                 session,
@@ -166,6 +188,48 @@ async def main() -> int:
                 "privacy to take effect", timeout=30)
             results["privacy_applied_live"] = True
             results["still_healthy_under_privacy"] = entity.get("healthy")
+            # The SFU decides, so ask it rather than ourselves: only the
+            # AI should end up subscribed to the camera's track.
+            await asyncio.sleep(4)
+            results["ai_can_see_private_camera"] = any(
+                pub.track is not None
+                for p in detector.remote_participants.values()
+                if p.identity == IDENTITY
+                for pub in p.track_publications.values())
+            cg_state = [
+                {"sid": pub.sid, "subscribed": pub.subscribed,
+                 "has_track": pub.track is not None}
+                for p in caregiver.remote_participants.values()
+                if p.identity == IDENTITY
+                for pub in p.track_publications.values()]
+            ai_state = [
+                {"sid": pub.sid, "subscribed": pub.subscribed,
+                 "has_track": pub.track is not None}
+                for p in detector.remote_participants.values()
+                if p.identity == IDENTITY
+                for pub in p.track_publications.values()]
+            results["_caregiver_publications"] = cg_state
+            results["_detector_publications"] = ai_state
+            # A caregiver must not hold the MEDIA. A publication row is
+            # metadata the SFU always shares; a decoded track is not.
+            results["caregiver_cannot_see_private_camera"] = not any(
+                x["has_track"] for x in cg_state)
+            # Does the rule hold for someone who arrives AFTER the
+            # camera was marked private? That distinction decides whether
+            # this is a revocation gap or a total failure.
+            late = await join_as("caregiver_late", args.livekit)
+            await asyncio.sleep(5)
+            results["_late_caregiver_publications"] = [
+                {"sid": pub.sid, "subscribed": pub.subscribed,
+                 "has_track": pub.track is not None}
+                for p in late.remote_participants.values()
+                if p.identity == IDENTITY
+                for pub in p.track_publications.values()]
+            results["late_caregiver_blocked"] = not any(
+                x["has_track"] for x in results["_late_caregiver_publications"])
+            await late.disconnect()
+            await detector.disconnect()
+            await caregiver.disconnect()
 
             # 3. the audio kill, and then permitting it again.
             desired["audio_capture_enabled"] = True
@@ -216,7 +280,10 @@ async def main() -> int:
         shutil.rmtree(workdir, ignore_errors=True)
 
     print(json.dumps(results, indent=2))
-    required = ("publishes", "privacy_applied_live", "audio_toggles_both_ways",
+    required = ("publishes", "privacy_applied_live",
+                "ai_can_see_private_camera",
+                "caregiver_cannot_see_private_camera",
+                "audio_toggles_both_ways",
                 "no_teardown_during_audio_toggle", "disconnect_stops_it")
     ok = all(results.get(k) for k in required)
     print("PASS" if ok else "FAIL")
