@@ -43,6 +43,7 @@ class _Connection:
         self.video_source = video_source
         self.video_track = video_track
         self.audio_track: Any = None
+        self.audio_source: Any = None
         self.privacy_applied: bool | None = None
 
 
@@ -210,13 +211,16 @@ class CameraPublisher:
         if wants and connection.audio_track is None:
             if self.audio_source_factory is None:
                 return
-            track = self.track_factory("audio", self.audio_source_factory())
+            audio_source = self.audio_source_factory()
+            track = self.track_factory("audio", audio_source)
             await participant.publish_track(track)
+            connection.audio_source = audio_source
             connection.audio_track = track
         elif not wants and connection.audio_track is not None:
             await participant.unpublish_track(connection.audio_track)
             connection.audio_track.stop()
             connection.audio_track = None
+            connection.audio_source = None
 
     # ── frames ────────────────────────────────────────────────────
     async def pump(self) -> None:
@@ -231,6 +235,23 @@ class CameraPublisher:
             if connection is not None:
                 connection.video_source.capture_frame(frame)
                 self.frames_published += 1
+
+    async def pump_audio(self) -> None:
+        """PCM into LiveKit, only while an audio track is published.
+
+        Read unconditionally rather than only when wanted: the decoder's
+        stdout is a pipe, and a lane nobody drains fills and blocks
+        ffmpeg. The lane itself is cut at the source when the kill
+        arrives, so there is normally nothing here to read.
+        """
+        frames = getattr(self.source, "audio_frames", None)
+        if frames is None:
+            return
+        async for chunk in frames():
+            connection = self.connection
+            if connection is None or connection.audio_track is None:
+                continue
+            await connection.audio_source.capture_frame(chunk)
 
     async def close(self) -> None:
         await self._disconnect("shutting down")
@@ -252,7 +273,5 @@ async def _maybe_await(result: Any) -> Any:
 def _default_track(kind: str, source: Any) -> Any:
     """Real LiveKit tracks. Imported lazily so the rules above stay
     testable on a machine with no LiveKit installed."""
-    from livekit import rtc
-    if kind == "video":
-        return rtc.LocalVideoTrack.create_video_track("camera", source)
-    return rtc.LocalAudioTrack.create_audio_track("camera-audio", source)
+    from core.livekit_adapters import track
+    return track(kind, source)

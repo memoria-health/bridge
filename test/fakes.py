@@ -113,6 +113,14 @@ class FakeVideoSource:
         self.captured.append(frame)
 
 
+class FakeAudioSource:
+    def __init__(self):
+        self.captured: list[bytes] = []
+
+    async def capture_frame(self, pcm) -> None:
+        self.captured.append(pcm)
+
+
 def reset() -> None:
     FakeRoom.instances.clear()
     FakeVideoSource.created.clear()

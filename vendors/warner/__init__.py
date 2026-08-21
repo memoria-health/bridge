@@ -7,6 +7,7 @@ transport. `core/` knows none of it.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from pathlib import Path
@@ -16,8 +17,12 @@ from aiohttp import web
 
 from core import store
 from core.auth import require_local, require_loopback
+from core import livekit_adapters
+from core.publisher import CameraPublisher
+from core.util import log
 from vendors.base import EntityHealth, Publisher, Vendor
 from vendors.warner.chromium import CAPTURE_HEIGHT, CAPTURE_WIDTH, ChromiumSupervisor
+from vendors.warner.source import WarnerSource
 
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
@@ -35,6 +40,12 @@ class WarnerVendor(Vendor):
     def __init__(self) -> None:
         self.chromium = ChromiumSupervisor()
         self._bridge: Any = None
+        # One decoder and one publisher per physical camera. The page
+        # only carries bytes; these do the work that used to happen in
+        # the browser.
+        self.sources: dict[str, WarnerSource] = {}
+        self.publishers: dict[str, CameraPublisher] = {}
+        self.pumps: dict[str, asyncio.Task] = {}
 
     # ── identity and inventory ────────────────────────────────────
     def camera_id(self, device_key: str) -> str:
@@ -80,14 +91,70 @@ class WarnerVendor(Vendor):
     def preflight(self) -> None:
         if not SDK_DIR.joinpath("connector.js").exists():
             raise RuntimeError(f"Warner SDK not found at {SDK_DIR}; set WARNER_SDK_DIR")
-        if not SDK_DIR.joinpath("js", "livekit-client.umd.js").exists():
-            raise RuntimeError("warner sdk/js/livekit-client.umd.js is required")
+        if not SDK_DIR.joinpath("play.js").exists():
+            raise RuntimeError("warner sdk/play.js is required")
 
     async def start(self) -> None:
         await self.chromium.start()
 
     async def apply(self, plan: dict[str, Publisher | None]) -> None:
+        # The page first: it is what produces the bytes everything below
+        # consumes, and it is cheap to have running with no subscriber.
         await self.chromium.apply(plan)
+        for camera_id, spec in plan.items():
+            publisher = self.publishers.get(camera_id)
+            if publisher is None:
+                if spec is None or not spec.connected:
+                    continue
+                publisher = self._build_publisher(camera_id)
+            await publisher.apply(spec)
+        for camera_id in [c for c in self.publishers if c not in plan]:
+            await self._retire(camera_id)
+
+    def _build_publisher(self, camera_id: str) -> CameraPublisher:
+        camera = store.find(camera_id) or {}
+        source = WarnerSource(
+            camera_id,
+            width=int(camera.get("capture_width", CAPTURE_WIDTH)),
+            height=int(camera.get("capture_height", CAPTURE_HEIGHT)),
+        )
+        publisher = CameraPublisher(
+            camera_id=camera_id,
+            source=source,
+            livekit_url=self._bridge.settings["livekit_url"],
+            token_for=self._bridge.mint_token,
+            room_factory=livekit_adapters.room,
+            video_source_factory=livekit_adapters.VideoSource,
+            audio_source_factory=livekit_adapters.AudioSource,
+        )
+        self.sources[camera_id] = source
+        self.publishers[camera_id] = publisher
+        self.pumps[camera_id] = asyncio.gather(
+            self._pump(camera_id, publisher.pump, "video"),
+            self._pump(camera_id, publisher.pump_audio, "audio"))
+        return publisher
+
+    async def _pump(self, camera_id: str, run: Any, what: str) -> None:
+        """One media lane into LiveKit, for as long as this camera exists.
+
+        Video and audio are separate tasks on purpose: audio failing must
+        not take the picture a caregiver is watching.
+        """
+        try:
+            await run()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a dead pump must not kill the loop
+            log(f"[{camera_id}] {what} pump failed: {exc}")
+
+    async def _retire(self, camera_id: str) -> None:
+        pump = self.pumps.pop(camera_id, None)
+        if pump:
+            pump.cancel()
+        publisher = self.publishers.pop(camera_id, None)
+        if publisher:
+            await publisher.close()
+        self.sources.pop(camera_id, None)
 
     def health(self) -> dict[str, EntityHealth]:
         return self.chromium.status
@@ -96,6 +163,8 @@ class WarnerVendor(Vendor):
         self.chromium.report(camera_id, body)
 
     async def close(self) -> None:
+        for camera_id in list(self.publishers):
+            await self._retire(camera_id)
         await self.chromium.close()
 
     # ── HTTP ──────────────────────────────────────────────────────
@@ -109,6 +178,7 @@ class WarnerVendor(Vendor):
     def add_routes(self, app: web.Application, bridge: Any) -> None:
         self._bridge = bridge
         app.router.add_get("/runtime", self._runtime_page)
+        app.router.add_get("/api/runtime/{camera_id}/frames", self._frames_socket)
         app.router.add_get("/api/runtime/{camera_id}/config", self._runtime_config)
         app.router.add_get("/api/debug/{camera_id}/screenshot", self._screenshot)
         app.router.add_get("/api/debug/{camera_id}/model", self._device_model)
@@ -140,6 +210,31 @@ class WarnerVendor(Vendor):
             "capture_width": int(camera.get("capture_width", CAPTURE_WIDTH)),
             "capture_height": int(camera.get("capture_height", CAPTURE_HEIGHT)),
         })
+
+    async def _frames_socket(self, request: web.Request) -> web.WebSocketResponse:
+        """Encoded frames in from the page, straight into the decoder.
+
+        Loopback only: the sender is our own headless page, and this is
+        the one route that injects video into a patient's room.
+        """
+        require_loopback(request)
+        camera_id = request.match_info["camera_id"]
+        source = self.sources.get(camera_id)
+        if source is None:
+            raise web.HTTPNotFound(text="camera is not publishing")
+        # Bounded, so a burst cannot become unbounded bridge memory. A
+        # 3MP keyframe measured ~20KB, so this is generous by 100x and
+        # still a ceiling.
+        socket = web.WebSocketResponse(max_msg_size=2 * 1024 * 1024)
+        await socket.prepare(request)
+        log(f"[{camera_id}] frame socket open")
+        try:
+            async for message in socket:
+                if message.type == web.WSMsgType.BINARY:
+                    source.offer(message.data)
+        finally:
+            log(f"[{camera_id}] frame socket closed")
+        return socket
 
     async def _page_for(self, request: web.Request) -> Any:
         require_local(request)

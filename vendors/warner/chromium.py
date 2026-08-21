@@ -54,16 +54,11 @@ class ChromiumSupervisor:
         # A separate context per camera: the SDK pauses decoding on
         # visibilitychange, so tabs sharing a context leave only the
         # active camera producing frames.
-        context = await self.browser.new_context(
-            viewport={"width": CAPTURE_WIDTH, "height": CAPTURE_HEIGHT})
-        # Warner's WebCodecs path transfers the source canvas to an
-        # OffscreenCanvas, which captureStream() then cannot see in
-        # headless. Forcing the WASM decoder is the workaround, and it
-        # goes away with the canvas.
-        await context.add_init_script(
-            'Object.defineProperty(globalThis, "VideoDecoder", '
-            '{value: undefined, configurable: false, writable: false});')
-        return context
+        # A small viewport: the page renders nothing now, so a 3MP one
+        # was allocating a compositor surface for a blank document.
+        # The forced-WASM-decoder init script is gone with the canvas —
+        # it existed only so captureStream() could see rendered frames.
+        return await self.browser.new_context(viewport={"width": 320, "height": 240})
 
     async def apply(self, plan: dict[str, Publisher | None]) -> None:
         wanted = {cid for cid, spec in plan.items()

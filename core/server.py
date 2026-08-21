@@ -30,6 +30,19 @@ class Bridge:
         self.vendor = vendor
         self.roster = Roster(settings)
 
+    def mint_token(self, identity: str, room: str) -> str:
+        """A LiveKit token for one of OUR publishers.
+
+        In-process because the publisher is now in-process; the HTTP
+        route below stays for the runtime page and applies the same
+        check, that the backend currently wants this publisher.
+        """
+        return (api.AccessToken(
+            self.settings["livekit_api_key"], self.settings["livekit_api_secret"])
+            .with_identity(identity).with_name(identity)
+            .with_grants(api.VideoGrants(room_join=True, room=room))
+            .to_jwt())
+
     def plan(self) -> dict[str, list]:
         return self.roster.plan(store.cameras())
 
@@ -120,13 +133,8 @@ class Bridge:
         spec = self.roster.publisher_for(camera)
         if not spec or not spec.connected or (identity, room) != (spec.identity, spec.room):
             raise web.HTTPForbidden(text="publisher is not desired/authorized")
-        token = (api.AccessToken(
-            self.settings["livekit_api_key"], self.settings["livekit_api_secret"])
-            .with_identity(identity).with_name(identity)
-            .with_grants(api.VideoGrants(room_join=True, room=room))
-            .to_jwt())
-        return web.json_response(
-            {"url": self.settings["livekit_url"], "token": token})
+        return web.json_response({"url": self.settings["livekit_url"],
+                                  "token": self.mint_token(identity, room)})
 
     async def update_status(self, request: web.Request) -> web.Response:
         require_local(request)

@@ -34,7 +34,7 @@ def build(source=None) -> CameraPublisher:
         token_for=lambda identity, room: f"token-{identity}",
         room_factory=fakes.FakeRoom,
         video_source_factory=fakes.FakeVideoSource,
-        audio_source_factory=lambda: object(),
+        audio_source_factory=fakes.FakeAudioSource,
         track_factory=lambda kind, _source: fakes.FakeTrack(kind),
     )
 
@@ -335,3 +335,33 @@ async def test_reconnecting_does_not_start_a_second_capture():
     await p.apply(pub())
     await p.apply(pub())
     assert source.starts == 1
+
+
+# ── frames ────────────────────────────────────────────────────────
+async def test_frames_reach_the_room():
+    source = fakes.FakeSource([b"a", b"b", b"c"])
+    p = build(source)
+    await p.apply(pub())
+    await p.pump()
+    assert fakes.FakeVideoSource.created[0].captured == [b"a", b"b", b"c"]
+    assert p.frames_published == 3
+
+
+async def test_frames_are_dropped_while_no_room_is_connected():
+    """Decoding can outlive a disconnect by a moment. Capturing into a
+    torn-down source would be a use-after-free in the SDK."""
+    source = fakes.FakeSource([b"a", b"b"])
+    p = build(source)
+    await p.pump()
+    assert p.frames_published == 0
+
+
+async def test_audio_is_only_captured_while_a_track_is_published():
+    """The lane is cut at the source when the kill arrives, but a few
+    already-decoded samples can still be in flight. They must not reach
+    LiveKit after the track is gone."""
+    source = fakes.FakeSource()
+    p = build(source)
+    await p.apply(pub(audio=False))
+    await p.pump_audio()
+    assert p.connection.audio_source is None

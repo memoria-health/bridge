@@ -55,7 +55,7 @@ AUDIO_RATE = 48000
 AUDIO_CH = 1
 
 
-def video_argv(enc: str, fps: int) -> list[str]:
+def video_argv(enc: str, fps: int, width: int, height: int) -> list[str]:
     """Encoded video on stdin, rawvideo on stdout.
 
     Deliberately NOT `-fflags +nobuffer`. That flag is on the gateway's
@@ -74,6 +74,13 @@ def video_argv(enc: str, fps: int) -> list[str]:
         "-flags", "low_delay",
         "-f", fmt, "-i", "pipe:0",
         "-fps_mode", "cfr", "-r", str(max(1, int(round(fps)))),
+        # Pin the output size. Frames are read from stdout in fixed
+        # width*height*3/2 chunks, so a camera streaming something other
+        # than the configured size would desync the reader permanently
+        # and every frame after the first would be garbage. When the
+        # sizes already match — the normal case — ffmpeg skips the
+        # scaler entirely.
+        "-s", f"{width}x{height}",
         "-f", "rawvideo", "-pix_fmt", "yuv420p", "-",
     ]
 
@@ -194,6 +201,27 @@ class _Lane:
         except Exception:  # noqa: BLE001
             pass
 
+    async def audio_frames(self):
+        """48kHz mono s16le PCM off the audio decoder, forever.
+
+        20ms at a time, which is what LiveKit expects per frame. Yields
+        nothing at all while the lane is cut, which is the normal state
+        at a site that does not permit recording.
+        """
+        chunk = AUDIO_RATE * AUDIO_CH * 2 // 50      # 20ms
+        while True:
+            lane = self.audio
+            proc = lane.proc if lane else None
+            if proc is None or proc.returncode is not None or proc.stdout is None:
+                await asyncio.sleep(0.2)
+                continue
+            try:
+                yield await proc.stdout.readexactly(chunk)
+            except asyncio.IncompleteReadError:
+                await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                raise
+
     def status(self) -> dict:
         return {"alive": self.alive, "fed": self.fed,
                 "dropped": self.dropped, "queued": self._queue.qsize()}
@@ -213,7 +241,7 @@ class WarnerSource:
         self.fps = fps
         self.width = width
         self.height = height
-        self.video = _Lane("video", camera_id, video_argv(enc, fps))
+        self.video = _Lane("video", camera_id, video_argv(enc, fps, width, height))
         # The facilities audio kill is decided upstream. When audio is
         # not wanted the lane is never created, so there is no
         # muted-but-open path to leak from.
@@ -266,9 +294,54 @@ class WarnerSource:
             log.info("[%s] first keyframe — decoding", self.camera_id)
         self.video.offer(body)
 
+    async def video_frames(self):
+        """Raw yuv420p frames off the decoder's stdout, forever.
+
+        `readexactly` rather than `read`: one frame is exactly
+        width*height*3/2 bytes and a short read would shift every
+        subsequent frame by the remainder. A dead decoder is waited on
+        rather than raised, because the supervisor above restarts it and
+        this loop must survive that.
+        """
+        size = self.width * self.height * 3 // 2
+        while True:
+            proc = self.video.proc
+            if proc is None or proc.returncode is not None or proc.stdout is None:
+                await asyncio.sleep(0.2)
+                continue
+            try:
+                yield await proc.stdout.readexactly(size)
+            except asyncio.IncompleteReadError:
+                log.warning("[%s] decoder ended mid-frame", self.camera_id)
+                await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                raise
+
+    async def audio_frames(self):
+        """48kHz mono s16le PCM off the audio decoder, forever.
+
+        20ms at a time, which is what LiveKit expects per frame. Yields
+        nothing at all while the lane is cut, which is the normal state
+        at a site that does not permit recording.
+        """
+        chunk = AUDIO_RATE * AUDIO_CH * 2 // 50      # 20ms
+        while True:
+            lane = self.audio
+            proc = lane.proc if lane else None
+            if proc is None or proc.returncode is not None or proc.stdout is None:
+                await asyncio.sleep(0.2)
+                continue
+            try:
+                yield await proc.stdout.readexactly(chunk)
+            except asyncio.IncompleteReadError:
+                await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                raise
+
     def status(self) -> dict:
         return {
             "enc": self.enc, "fps": self.fps,
+            "size": f"{self.width}x{self.height}",
             "started_on_keyframe": self.started,
             "video": self.video.status(),
             "audio": self.audio.status() if self.audio else None,
