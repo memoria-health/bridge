@@ -95,21 +95,33 @@ mobile/AI demand fields, but it is not the production default.
 ## Media plane: camera to browser
 
 For every active physical camera, Playwright loads `/runtime?camera_id=...`.
-The runtime performs the following sequence:
+The page is TRANSPORT ONLY. It does not decode, render or encode anything.
 
-1. Loads Warner transport, decoder and player scripts from `/sdk/`.
+1. Loads Warner transport and player scripts from `/sdk/`. No WASM decoder.
 2. Connects using `Player.ConnectDevice(...)` over Warner cloud/P2P/TURN.
-3. Receives a successful Warner login callback.
-4. Calls `Player.OpenStream(device_id, "", channel, stream_id, 0)`.
-5. Warner delivers compressed video frames through
-   `ConnectApi.onrecvframeex`.
-6. Warner's WASM decoder converts H.264/H.265 frames and renders them to an
-   HTML canvas.
-7. Warner delivers decoded PCM audio to its audio-player feed.
+3. On a successful login callback, calls
+   `ConnectApi.open_stream(session, channel, stream_id)`.
+4. Warner delivers ENCODED frames through `ConnectApi.onrecvframeex` —
+   video (frametype 1 keyframe, 2 delta) and audio (frametype 0) on the
+   same callback.
+5. The page prepends a one-byte type header and forwards each frame over
+   a loopback WebSocket to Python.
 
-The bridge forces Warner's WASM decoder in headless Chromium. Its WebCodecs
-path transfers rendering to an OffscreenCanvas and can leave
-`canvas.captureStream()` publishing a black picture.
+`Player.init` is deliberately never called. It is what fills play.js's
+`playerList`, and the decode/paint path at `play.js:288` is guarded on that
+list being populated — so leaving it empty removes the WASM decoder and the
+canvas, while `onrecvframeex`, which fires upstream in `433.connector.js`,
+still delivers every frame. Two consequences follow:
+
+- `Player.OpenStream` is replaced by `ConnectApi.open_stream`, because the
+  Player wrapper ends in an UNGUARDED `playerList[winindex].open()`.
+- `Player.OpenAudio` is dropped. It sets local speaker volume and `isSound`,
+  and `isSound` appears nowhere in the connector — the camera sends audio
+  over P2P regardless.
+
+The frame tap is installed as a property with a setter rather than a plain
+assignment, because the SDK assigns `onrecvframeex` itself after page load
+and a plain assignment is silently replaced.
 
 Some Warner bundles request assets from the site root, while others request
 them under `/sdk/`. The Python application intentionally serves both forms:
@@ -120,19 +132,24 @@ them under `/sdk/`. The Python application intentionally serves both forms:
 /sdk/logo_bg.png and /logo_bg.png
 ```
 
-## Media conversion inside Chromium
+## Media conversion in Python
 
 ### Video
 
-The source canvas is captured at 25 frames per second:
+Encoded frames arrive on the WebSocket and go straight into ffmpeg, which
+decodes to raw yuv420p on stdout. `CameraPublisher` reads fixed-size frames
+and hands them to a LiveKit `VideoSource`, publishing as an ordinary `cam_*`
+participant — no Ingress, so no per-minute ingest bill and no new participant
+identity for the webhooks and `room_reconciler` to trip over.
 
-```javascript
-videoStream = canvas.captureStream(25)
-```
+The decoder's output size is PINNED with `-s WxH`. Frames are read in fixed
+`width*height*3/2` chunks, so a camera streaming another size would desync
+the reader permanently and every frame after the first would be garbage.
 
-The first video media track is cloned and wrapped as a LiveKit
-`LocalVideoTrack`. LiveKit receives browser-compatible raw frames after the
-Warner decoder; LiveKit/WebRTC performs its own outbound encoding. The mobile
+Audio is a SECOND ffmpeg process (ADTS AAC in, 48kHz mono PCM out) with its
+own pump, so audio failing cannot take the picture a caregiver is watching.
+The facilities audio kill cuts that lane at the source rather than only
+unpublishing the track. The mobile
 app does not need to decode the camera's original H.265 bitstream directly.
 
 ### Audio
@@ -170,18 +187,25 @@ and publishes cloned video and audio tracks. A per-identity connection lock
 prevents overlapping joins. Without this lock, duplicate participants with the
 same identity eject one another and repeatedly unpublish tracks.
 
-## Fan-out
+## One camera, one room
 
-One physical Warner camera can be assigned to several LiveKit identities and
-rooms. The bridge opens the vendor stream only once, then clones the same
-canvas/audio capture into several LiveKit `Room` connections:
+One physical camera is one database row, one `livekit_identity`, and ONE
+room. Provisioning used to loop over every patient of the caregiver, so a
+shared camera became N rows publishing N identical streams — N times the
+ingest, N times the model spend on the same footage, duplicate events.
+
+A camera covering several patients streams into the PRIMARY patient's room
+only (`camera_patients`, one row flagged `is_primary`). The other covered
+patients receive the RESULTS, never a second copy of the video. Multi-patient
+is resolved on the subscriber side: the identity node scores a probe against
+every enrolled patient on that camera.
 
 ```text
 One Warner camera connection
         |
-        +-> LiveKit identity A -> patient room A
-        +-> LiveKit identity B -> patient room B
-        +-> LiveKit identity C -> patient room C
+        +-> LiveKit identity -> primary patient's room
+                                     |
+                                     +-> results for every covered patient
 ```
 
 This avoids duplicate vendor-cloud decoding per resident assignment, although
@@ -246,8 +270,9 @@ connected to LiveKit Server
 publishing
 ```
 
-`publishing` proves track publication, not that camera pixels exist. Frame
-counters and the screenshot endpoint verify the upstream canvas.
+`publishing` proves track publication, not that camera pixels exist. The
+frame counters are what verify the upstream stream. There is no canvas to
+screenshot any more; the page renders nothing.
 
 ### Video-frame watchdog
 
@@ -303,11 +328,21 @@ Interpretation:
 ## Confirmed production failure and resolution
 
 The tested camera initially used `channel=1, stream_id=1`. Warner reported that
-the stream-open command succeeded, and LiveKit published tracks, but the canvas
-remained blank and no frame callback occurred. Changing to
-`channel=0, stream_id=0` immediately produced continuous `800x448 H265` frame
-counters. This confirms that Warner channel numbers are zero-based physical
-channels and that single-channel cameras must normally use channel zero.
+the stream-open command succeeded but no frame callback occurred. Changing to
+`channel=0` immediately produced continuous frame counters, which confirms that
+Warner channel numbers are zero-based physical channels and that
+single-channel cameras must use channel zero.
+
+CORRECTION (2026-08-21). The same change also moved stream_id from 1 to 0, and
+that half was wrong. **stream_id 0 is the SUB stream**, which caps at
+`800x448` — the `800x448 H265` counters this section originally cited as proof
+of success were proof of the downgrade. **stream_id 1 is MAIN**, measured at
+`2304x1296 H265`. Use `channel=0, stream_id=1`.
+
+The mistake survived because `800x448` frames flowing looks identical to
+success if you are only counting frames. It cost every camera provisioned
+before 2026-08-20 its resolution, on 3MP sensors, upstream of a detector whose
+face matching depends on pixel height.
 
 ## Confirmed silent-decoder failure and recovery
 
