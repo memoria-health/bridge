@@ -223,12 +223,10 @@ grep -E 'worker|login succeeded|Open stream|warner video frames|LiveKit|publishi
 Capture the hidden Warner canvas locally:
 
 ```bash
-curl --fail \
-  http://127.0.0.1:8090/api/debug/CAMERA_ID/screenshot \
-  --output /home/administrator/warner-debug.png
 ```
 
-The screenshot can contain private camera imagery. Delete it after diagnosis.
+Per-camera health, including frame age and what was applied, is on
+`/api/health` for an authorized caller.
 
 ## 13. Service management
 

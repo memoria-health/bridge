@@ -185,7 +185,6 @@ class WarnerVendor(Vendor):
         app.router.add_get("/runtime", self._runtime_page)
         app.router.add_get("/api/runtime/{camera_id}/frames", self._frames_socket)
         app.router.add_get("/api/runtime/{camera_id}/config", self._runtime_config)
-        app.router.add_get("/api/debug/{camera_id}/screenshot", self._screenshot)
         app.router.add_get("/api/debug/{camera_id}/model", self._device_model)
 
     async def _runtime_page(self, request: web.Request) -> web.FileResponse:
@@ -247,12 +246,6 @@ class WarnerVendor(Vendor):
         if not page:
             raise web.HTTPNotFound(text="camera worker is not active")
         return page
-
-    async def _screenshot(self, request: web.Request) -> web.Response:
-        page = await self._page_for(request)
-        return web.Response(body=await page.screenshot(type="png"),
-                            content_type="image/png",
-                            headers={"Cache-Control": "no-store"})
 
     async def _device_model(self, request: web.Request) -> web.Response:
         """What this camera will let us change. The vendor keeps no

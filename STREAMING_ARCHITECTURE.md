@@ -232,7 +232,8 @@ CPU, RAM and both inbound and outbound bandwidth.
 - Both files must be readable only by the service account.
 - Port 8090 must be limited to an administrator LAN/VPN and never exposed
   directly to the public Internet.
-- Runtime configuration/token/screenshot endpoints accept only loopback calls.
+- Runtime configuration, token and frame-ingest endpoints accept only
+  loopback calls.
 - Generated LiveKit tokens are constrained to an authorized identity and room.
 - Rotate credentials that appear in chat, documentation, screenshots or logs.
 
@@ -298,8 +299,9 @@ logs redact LiveKit `access_token` and `join_request` query values.
 2. Confirm `state=publishing`.
 3. Search logs for `warner video frames`.
 4. Verify `/j-decoder.wasm`, `/mqtt/mqttWorker.js` and `/logo_bg.png` return 200.
-5. Capture the local diagnostic screenshot.
-6. If frames and screenshot are good, inspect the mobile subscriber's exact
+5. Check the per-camera rows on `/api/health` — state, frame age, restarts,
+   and what was actually applied.
+6. If frames are landing, inspect the mobile subscriber's exact
    room/identity and track attachment.
 
 Commands:
@@ -308,9 +310,6 @@ Commands:
 sudo journalctl -u memoria-warner-bridge --since "5 minutes ago" --no-pager \
   | grep -E 'warner video frames|worker|Open stream|publishing|HTTP 404|Aborted'
 
-curl --fail \
-  http://127.0.0.1:8090/api/debug/CAMERA_ID/screenshot \
-  --output /tmp/warner-debug.png
 ```
 
 Interpretation:
@@ -320,8 +319,8 @@ Interpretation:
 - Worker and publisher but no frames: wrong channel/stream or camera transport.
 - `publishing` with a stale frame counter: silent Warner decoder freeze; confirm
   a subsequent `VIDEO STALLED` event and automatic worker recovery.
-- Frames but black screenshot: decoder/rendering problem.
-- Good screenshot but blank app: wrong LiveKit room/identity or subscriber UI.
+- Frames landing but blank app: wrong LiveKit room/identity, subscriber UI, or
+  a private camera whose allow-list does not include the subscriber.
 - Repeated disconnect/reconnect reason 2: duplicate publisher identity.
 - HTTP 404 for WASM/worker assets: wrong/old bridge server build.
 
