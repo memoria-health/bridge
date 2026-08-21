@@ -33,18 +33,19 @@ def fingerprint(token: str) -> str:
     return f"{token[:6]}…{token[-4:]} (len {len(token)})" if token else "<none>"
 
 
-def load_identity() -> dict[str, Any]:
+def load_identity(path: Path | None = None) -> dict[str, Any]:
     """Return this instance's `{instance_id, token}`, minting once.
 
     `BRIDGE_TOKEN` overrides for ops and is deliberately NOT persisted:
     an environment override should leave no trace on disk to go stale.
     """
+    path = path or IDENTITY_PATH
     override = os.environ.get("BRIDGE_TOKEN", "").strip()
     if override:
         return {"instance_id": os.environ.get("BRIDGE_INSTANCE_ID", "bridge-env"),
                 "token": override, "source": "env"}
 
-    data = load_json(IDENTITY_PATH, {})
+    data = load_json(path, {})
     if isinstance(data.get("token"), str) and data["token"]:
         return {**data, "source": "file"}
 
@@ -52,9 +53,9 @@ def load_identity() -> dict[str, Any]:
         "instance_id": f"bridge-{secrets.token_hex(4)}",
         "token": secrets.token_urlsafe(_TOKEN_BYTES),
     }
-    write_json_atomic(IDENTITY_PATH, identity)
+    write_json_atomic(path, identity)
     log(f"minted bridge identity {identity['instance_id']} "
-        f"token {fingerprint(identity['token'])} -> {IDENTITY_PATH}")
+        f"token {fingerprint(identity['token'])} -> {path}")
     # Until a camera is provisioned with this token the backend has no
     # row for it, so the roster will 401. That is the enrolment moment,
     # not an error.

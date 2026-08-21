@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""One camera into every room that currently wants it.
+
+Publishes from Python through a LiveKit `VideoSource` as an ordinary
+`cam_*` participant, the way `nemara-gateway/publisher.py` already does
+in production: no Ingress, no per-minute ingest bill, and no new
+participant identity for the webhooks and `room_reconciler` to trip on.
+
+The rule that shapes this file: **every flag is re-applied on every
+reconcile.** The browser version applied privacy and the audio kill once,
+at connect time, and then only ever connected or disconnected
+publishers — so a site turning audio off, or a room being marked as a
+bathroom, changed a database row and nothing else until something
+unrelated forced a reconnect. Enforcement that happens once is not
+enforcement.
+
+LiveKit is injected rather than imported so the rules above can be
+tested without a network.
+"""
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Callable
+
+from core.util import log
+from vendors.base import Publisher
+
+# Only analysis workers may subscribe to a private camera. Matches the
+# gateway's allow-list; the app may still join the room and simply finds
+# nothing it is allowed to pull.
+AI_SUBSCRIBER_PREFIX = "detector_worker"
+
+
+class _Connection:
+    """One LiveKit room this camera appears in."""
+
+    def __init__(self, spec: Publisher, room: Any, video_source: Any,
+                 video_track: Any):
+        self.spec = spec
+        self.room = room
+        self.video_source = video_source
+        self.video_track = video_track
+        self.audio_track: Any = None
+        self.privacy_applied: bool | None = None
+
+
+class CameraPublisher:
+    def __init__(
+        self,
+        camera_id: str,
+        source: Any,
+        livekit_url: str,
+        token_for: Callable[[str, str], str],
+        room_factory: Callable[[], Any],
+        video_source_factory: Callable[[int, int], Any],
+        audio_source_factory: Callable[[], Any] | None = None,
+        track_factory: Callable[[str, Any], Any] | None = None,
+    ):
+        self.camera_id = camera_id
+        self.source = source
+        self.livekit_url = livekit_url
+        self.token_for = token_for
+        self.room_factory = room_factory
+        self.video_source_factory = video_source_factory
+        self.audio_source_factory = audio_source_factory
+        self.track_factory = track_factory or _default_track
+        self.rooms: dict[str, _Connection] = {}
+        self.frames_published = 0
+        self._capturing = False
+
+    # ── reconcile ─────────────────────────────────────────────────
+    async def apply(self, publishers: list[Publisher]) -> None:
+        """Bring reality in line with what the backend wants. Idempotent."""
+        wanted = {p.identity: p for p in publishers if p.connected}
+
+        for identity in list(self.rooms):
+            if identity not in wanted:
+                await self._disconnect(identity, "no longer wanted")
+
+        if wanted and not self._capturing:
+            # One capture for every room. Two would be twice the decode,
+            # twice the LiveKit bill, and two chances to drift apart.
+            await self.source.start(
+                want_audio=any(p.audio_capture_enabled for p in wanted.values()))
+            self._capturing = True
+
+        for identity, spec in wanted.items():
+            if identity not in self.rooms:
+                await self._connect(spec)
+
+        # EVERY pass, for every live room, including ones that were
+        # already connected before this call.
+        for identity, spec in list(wanted.items()):
+            connection = self.rooms.get(identity)
+            if connection:
+                connection.spec = spec
+                await self._enforce(connection)
+
+        if not self.rooms and self._capturing:
+            await self.source.stop()
+            self._capturing = False
+
+    async def _connect(self, spec: Publisher) -> None:
+        room = self.room_factory()
+        try:
+            await room.connect(self.livekit_url,
+                               self.token_for(spec.identity, spec.room))
+            video_source = self.video_source_factory(
+                self.source.width, self.source.height)
+            track = self.track_factory("video", video_source)
+            await room.local_participant.publish_track(track)
+        except Exception as exc:  # noqa: BLE001 — retried on the next pass
+            log(f"[{self.camera_id}] connect {spec.identity} failed: {exc}")
+            try:
+                await room.disconnect()
+            except Exception:  # noqa: BLE001 — never completed
+                pass
+            return
+        self.rooms[spec.identity] = _Connection(spec, room, video_source, track)
+        log(f"[{self.camera_id}] publishing {spec.identity} -> {spec.room}")
+
+    async def _disconnect(self, identity: str, why: str) -> None:
+        connection = self.rooms.pop(identity, None)
+        if not connection:
+            return
+        try:
+            await connection.room.disconnect()
+        except Exception:  # noqa: BLE001 — already gone
+            pass
+        for track in (connection.video_track, connection.audio_track):
+            if track is not None:
+                track.stop()
+        log(f"[{self.camera_id}] stopped {identity}: {why}")
+
+    # ── the two safety flags ──────────────────────────────────────
+    async def _enforce(self, connection: _Connection) -> None:
+        try:
+            await self._enforce_privacy(connection)
+        except Exception as exc:  # noqa: BLE001
+            # Failing OPEN would publish a bathroom camera to every
+            # subscriber in the room. No picture is the right outcome.
+            log(f"[{self.camera_id}] privacy enforcement failed for "
+                f"{connection.spec.identity}: {exc}; tearing down")
+            await self._disconnect(connection.spec.identity, "privacy unenforceable")
+            return
+        await self._enforce_audio(connection)
+
+    async def _enforce_privacy(self, connection: _Connection) -> None:
+        participant = connection.room.local_participant
+        if connection.spec.privacy_enabled:
+            await participant.set_track_subscription_permissions(
+                False, [{"participantIdentity": AI_SUBSCRIBER_PREFIX,
+                         "allTracksAllowed": True}])
+        else:
+            # A camera that stops being private must stop being
+            # restricted, or clearing the flag in the app does nothing.
+            await participant.set_track_subscription_permissions(True, [])
+        connection.privacy_applied = connection.spec.privacy_enabled
+
+    async def _enforce_audio(self, connection: _Connection) -> None:
+        wants = connection.spec.audio_capture_enabled
+        participant = connection.room.local_participant
+        if wants and connection.audio_track is None:
+            if self.audio_source_factory is None:
+                return
+            track = self.track_factory("audio", self.audio_source_factory())
+            await participant.publish_track(track)
+            connection.audio_track = track
+        elif not wants and connection.audio_track is not None:
+            await participant.unpublish_track(connection.audio_track)
+            connection.audio_track.stop()
+            connection.audio_track = None
+
+    # ── frames ────────────────────────────────────────────────────
+    async def pump(self) -> None:
+        """Fan decoded frames out to every connected room.
+
+        Deliberately does NOT hold a queue of its own: the source already
+        bounds and drops, and a second buffer here would be latency
+        nobody asked for plus the unbounded-queue OOM again.
+        """
+        async for frame in self.source.video_frames():
+            for connection in list(self.rooms.values()):
+                connection.video_source.capture_frame(frame)
+            self.frames_published += 1
+
+    async def close(self) -> None:
+        for identity in list(self.rooms):
+            await self._disconnect(identity, "shutting down")
+        if self._capturing:
+            await self.source.stop()
+            self._capturing = False
+
+
+def _default_track(kind: str, source: Any) -> Any:
+    """Real LiveKit tracks. Imported lazily so the rules above stay
+    testable on a machine with no LiveKit installed."""
+    from livekit import rtc
+    if kind == "video":
+        return rtc.LocalVideoTrack.create_video_track("camera", source)
+    return rtc.LocalAudioTrack.create_audio_track("camera-audio", source)
