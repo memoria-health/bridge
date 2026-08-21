@@ -26,10 +26,11 @@ SDK_DIR = Path(os.environ.get("WARNER_SDK_DIR", HERE / "sdk"))
 
 class WarnerVendor(Vendor):
     name = "warner"
-    # Declared, not assumed. No battery and no app-presence signal exists
-    # on this hardware, so the backend must render those as absent rather
-    # than as healthy.
-    capabilities = ("talk", "privacy_sever", "audio_kill")
+    # Declared, not assumed, and declared about the BRIDGE rather than the
+    # hardware. The camera reports Product.Capability.TwowayTalk, but
+    # nothing here implements talk, so listing it would be the exact lie
+    # rule 4 exists to prevent. Add it when the code arrives.
+    capabilities = ("privacy_sever", "audio_kill")
 
     def __init__(self) -> None:
         self.chromium = ChromiumSupervisor()
