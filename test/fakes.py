@@ -15,6 +15,17 @@ class FakeTrack:
         self.stopped = True
 
 
+class FakePublication:
+    """What publish_track returns. `unpublish_track` takes this SID."""
+
+    _next = 0
+
+    def __init__(self, track):
+        FakePublication._next += 1
+        self.sid = f"TR_{FakePublication._next}"
+        self.track = track
+
+
 class FakeParticipant:
     def __init__(self):
         self.published: list[FakeTrack] = []
@@ -30,11 +41,17 @@ class FakeParticipant:
     async def publish_track(self, track, options=None):
         self.order.append("publish")
         self.published.append(track)
-        return track
+        return FakePublication(track)
 
-    async def unpublish_track(self, track):
+    async def unpublish_track(self, track_sid):
+        """Takes a SID STRING, matching the real SDK. The earlier fake
+        accepted a track object, so it recorded a call that raises
+        against LiveKit — every audio kill, every time."""
+        if not isinstance(track_sid, str):
+            raise TypeError(
+                f"unpublish_track wants a track SID, got {type(track_sid).__name__}")
         self.order.append("unpublish")
-        self.unpublished.append(track)
+        self.unpublished.append(track_sid)
 
     async def set_track_subscription_permissions(
         self, *, allow_all_participants, participant_permissions=None,

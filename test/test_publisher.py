@@ -88,7 +88,8 @@ async def test_audio_is_removed_when_the_kill_arrives_mid_stream():
     await p.apply(pub(audio=True))
     participant = fakes.FakeRoom.instances[0].local_participant
     await p.apply(pub(audio=False))
-    assert [t.kind for t in participant.unpublished] == ["audio"]
+    assert len(participant.unpublished) == 1
+    assert isinstance(participant.unpublished[0], str), "must unpublish by SID"
 
 
 async def test_the_camera_never_opens_an_audio_lane_nobody_wants():
@@ -427,7 +428,8 @@ async def test_the_kill_unpublishes_before_cutting_the_lane():
     await p.apply(pub(audio=True))
     participant = fakes.FakeRoom.instances[0].local_participant
     await p.apply(pub(audio=False))
-    assert [t.kind for t in participant.unpublished] == ["audio"]
+    assert len(participant.unpublished) == 1
+    assert isinstance(participant.unpublished[0], str), "must unpublish by SID"
     assert source.audio_state[-1] is False
     assert participant.order.index("unpublish") < len(participant.order)
 

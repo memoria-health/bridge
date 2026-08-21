@@ -45,6 +45,9 @@ class _Connection:
         self.video_track = video_track
         self.audio_track: Any = None
         self.audio_source: Any = None
+        # publish_track returns a LocalTrackPublication, and
+        # unpublish_track takes its SID — a string, not the track.
+        self.audio_publication: Any = None
         self.privacy_applied: bool | None = None
 
 
@@ -265,12 +268,21 @@ class CameraPublisher:
         # Cutting first leaves already-decoded PCM able to reach LiveKit
         # through pump_audio, because the track is still published.
         if not wants and connection.audio_track is not None:
-            await participant.unpublish_track(connection.audio_track)
+            # By SID. Passing the track object raised "bad argument type
+            # for built-in operation" against the real SDK, so the
+            # facilities audio kill failed EVERY time — and with
+            # tear-down-on-failure that meant the camera dropped and
+            # republished in a loop, with audio, at a site that does not
+            # permit recording it.
+            sid = getattr(connection.audio_publication, "sid", None)
+            if sid:
+                await participant.unpublish_track(sid)
             stop = getattr(connection.audio_track, "stop", None)
             if callable(stop):
                 stop()
             connection.audio_track = None
             connection.audio_source = None
+            connection.audio_publication = None
         if wants != self._audio_open:
             setter = getattr(self.source, "set_audio", None)
             if setter is not None:
@@ -281,7 +293,7 @@ class CameraPublisher:
                 return
             audio_source = self.audio_source_factory()
             track = self.track_factory("audio", audio_source)
-            await participant.publish_track(track)
+            connection.audio_publication = await participant.publish_track(track)
             connection.audio_source = audio_source
             connection.audio_track = track
 
