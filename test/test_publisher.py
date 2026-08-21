@@ -470,34 +470,20 @@ async def test_teardown_survives_a_track_without_stop():
     assert p.connection is None
 
 
-async def test_a_camera_becoming_private_republishes():
-    """set_track_subscription_permissions gates NEW subscriptions and
-    does NOT revoke existing ones — measured against a real SFU. So a
-    room reclassified as a bathroom while a caregiver is watching kept
-    streaming to them. A new publication drops every subscription to the
-    old track; the permission set then gates who may take up the new."""
+async def test_privacy_never_interrupts_the_stream():
+    """The AI must not go blind to enforce a rule about human viewing.
+
+    Republishing on the transition would drop every existing subscriber,
+    which is the point for a caregiver — but the detector and the
+    identity service are subscribers too, and the product promise is that
+    a private room keeps producing alerts while no human sees the video.
+    Interrupting the AI to enforce something the app already enforces in
+    its live view is the wrong trade.
+    """
     p = build()
     await p.apply(pub(privacy=False))
-    first = fakes.FakeRoom.instances[0]
-    await p.apply(pub(privacy=True))
-    assert first.disconnected is True, "the old publication must be dropped"
-    assert len(fakes.FakeRoom.instances) == 2
-    assert p.connection is not None
-    assert p.applied["privacy_enabled"] is True
-
-
-async def test_a_camera_that_is_already_private_does_not_republish():
-    """Republishing on every pass would drop the picture every 2s."""
-    p = build()
-    await p.apply(pub(privacy=True))
-    await p.apply(pub(privacy=True))
-    await p.apply(pub(privacy=True))
-    assert len(fakes.FakeRoom.instances) == 1
-
-
-async def test_privacy_being_cleared_does_not_republish():
-    """Going public is not a leak; nobody needs dropping."""
-    p = build()
+    room = fakes.FakeRoom.instances[0]
     await p.apply(pub(privacy=True))
     await p.apply(pub(privacy=False))
+    assert room.disconnected is False
     assert len(fakes.FakeRoom.instances) == 1

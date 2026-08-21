@@ -117,27 +117,19 @@ class CameraPublisher:
             self._audio_open = wanted.audio_capture_enabled
             self._capturing = True
 
-        # A camera becoming private while someone is ALREADY watching
-        # must republish, not merely re-permission. Measured against a
-        # real SFU: set_track_subscription_permissions gates NEW
-        # subscriptions and does not revoke existing ones, so a room
-        # reclassified as a bathroom kept streaming to every caregiver
-        # already subscribed until they happened to leave. A new
-        # publication drops every subscription to the old track, and the
-        # permission set then gates who may take up the new one. Costs a
-        # few seconds of video, once, on reclassification.
+        # NOT republished when privacy turns on. Measured against a real
+        # SFU, set_track_subscription_permissions gates NEW subscriptions
+        # and does not revoke existing ones, so a caregiver already
+        # watching keeps the track until they leave the room. Republishing
+        # would drop them — and would ALSO drop the detector and the
+        # identity service, blinding the AI for several seconds.
         #
-        # Decided HERE rather than inside _enforce, so nothing downstream
-        # is left holding a connection that was replaced underneath it.
-        if (self.connection.privacy_applied is False
-                and wanted.privacy_enabled):
-            log(f"[{self.camera_id}] now private: republishing to drop "
-                f"subscribers from before the reclassification")
-            await self._disconnect("republishing for privacy")
-            await self._connect(wanted)
-            if self.connection is None:
-                return
-
+        # That trade is backwards. The product promise is that a private
+        # room keeps producing AI alerts while no human sees the video, so
+        # interrupting the AI to enforce a rule the app already enforces
+        # in its live view costs the thing that matters to protect the
+        # thing that does not. The permission set below still gates every
+        # NEW subscriber, which is the durable half.
         # EVERY pass, including when the room was already connected
         # before this call. Enforcement that happens once is not
         # enforcement.
