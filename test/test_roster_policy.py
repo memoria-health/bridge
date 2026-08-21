@@ -21,6 +21,37 @@ def roster(mode: str = "continuous", *items) -> Roster:
     return r
 
 
+def test_the_poll_carries_the_report_and_cannot_be_a_bare_get(monkeypatch):
+    """Rule 2. Instruction is the RESPONSE to a report; a service that
+    can ask for orders without saying what it did with the last ones is
+    exactly how this bridge ignored disconnect for months."""
+    sent = {}
+
+    def fake_post(url, body, headers=None):
+        sent["url"], sent["body"], sent["headers"] = url, body, headers
+        return {"cameras": [item()]}
+
+    monkeypatch.setattr("core.roster.post_json", fake_post)
+    r = Roster({"backend_url": "https://b", "gateway_token": "tok",
+                "poll_seconds": 3, "stream_mode": "continuous"},
+               report=lambda: {"contract": "fleet-v1", "entities": []})
+    assert len(r.fetch()) == 1
+    assert sent["url"].endswith("/v1/fleet/poll")
+    assert sent["body"]["contract"] == "fleet-v1"
+    assert sent["headers"]["Authorization"] == "Bearer tok"
+
+
+def test_the_report_is_rebuilt_every_poll_not_cached():
+    """A cached body would let a camera that died five minutes ago keep
+    reporting the health it had when it was alive."""
+    calls = []
+    r = Roster({"backend_url": "", "gateway_token": "", "poll_seconds": 3,
+                "stream_mode": "continuous"},
+               report=lambda: calls.append(1) or {"n": len(calls)})
+    assert r.report()["n"] == 1
+    assert r.report()["n"] == 2
+
+
 def item(identity="cam_1", room="patient_x", **kw) -> dict:
     return {"livekit_identity": identity, "livekit_room": room, **kw}
 

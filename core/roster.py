@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Callable
 
-from core.util import get_json, log
+from core.util import log, post_json
 from vendors.base import Publisher
 
 
@@ -24,21 +24,29 @@ def _truthy(value: Any) -> bool:
 
 
 class Roster:
-    """Polls `/v1/gateway/roster` and caches the answer.
+    """Reports to `/v1/fleet/poll` and caches the instruction it gets back.
 
     The poll IS the heartbeat: a bridge that stops working stops polling,
-    and there is no second mechanism to disagree with.
+    and there is no second mechanism to disagree with. It is a POST
+    rather than a GET because the report is a PRECONDITION of the
+    instruction — you cannot be told what to do without saying what you
+    did with the last answer.
     """
 
-    def __init__(self, settings: dict[str, Any]):
+    def __init__(self, settings: dict[str, Any],
+                 report: Callable[[], dict[str, Any]] | None = None):
         self.settings = settings
+        # Rule 2: instruction is the RESPONSE to a report, not a thing
+        # you can ask for on its own.
+        self.report = report or (lambda: {})
         self.items: list[dict[str, Any]] = []
         self.error: str | None = None
         self.updated_at = 0.0
 
     def fetch(self) -> list[dict[str, Any]]:
-        data = get_json(
-            f"{self.settings['backend_url']}/v1/gateway/roster",
+        data = post_json(
+            f"{self.settings['backend_url']}/v1/fleet/poll",
+            self.report(),
             {"Authorization": f"Bearer {self.settings['gateway_token']}"},
         )
         return data.get("cameras", [])

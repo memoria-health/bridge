@@ -16,9 +16,9 @@ from typing import Any
 from aiohttp import web
 from livekit import api
 
-from core import store
+from core import fleet, store
 from core.auth import require_local
-from core.config import FRAME_STALL_SECONDS
+from core.config import FRAME_STALL_SECONDS, VERSION
 from core.roster import Roster
 from core.util import log, post_json
 from vendors.base import Vendor
@@ -28,7 +28,21 @@ class Bridge:
     def __init__(self, settings: dict[str, Any], vendor: Vendor):
         self.settings = settings
         self.vendor = vendor
-        self.roster = Roster(settings)
+        self.roster = Roster(settings, self.fleet_report)
+
+    def fleet_report(self) -> dict[str, Any]:
+        """This poll's body: who we are and how every camera we own is
+        doing. Built fresh each time — a cached report would let a dead
+        camera keep looking alive."""
+        return fleet.report_body(
+            instance_id=self.settings["instance_id"],
+            kind="camera-bridge",
+            version=VERSION,
+            capabilities=self.vendor.capabilities,
+            entities=self.vendor.health(),
+            now=time.time(),
+            stall_seconds=FRAME_STALL_SECONDS,
+        )
 
     def mint_token(self, identity: str, room: str) -> str:
         """A LiveKit token for one of OUR publishers.

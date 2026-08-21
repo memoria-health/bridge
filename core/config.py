@@ -42,6 +42,13 @@ FRAME_STARTUP_GRACE_SECONDS = float(
 
 VENDOR = os.environ.get("BRIDGE_VENDOR", "warner")
 
+# Reported on every poll so the backend can tell which bridges have a
+# fix and which have not. Read from the file the release process bumps.
+try:
+    VERSION = (HERE / "VERSION.txt").read_text(encoding="utf-8").strip()
+except OSError:
+    VERSION = "unknown"
+
 
 def _first(*names: str, default: str = "") -> str:
     for name in names:
