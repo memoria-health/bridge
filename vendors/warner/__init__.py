@@ -72,7 +72,12 @@ class WarnerVendor(Vendor):
             "camera_user": str(body.get("camera_user", "admin")),
             "camera_password": str(body.get("camera_password", "")),
             "channel": int(body.get("channel", 0)),
-            "stream_id": int(body.get("stream_id", 0)),
+            # 1 = MAIN. stream 0 is the camera's SUB feed, which caps at
+            # 800x448 — measured. 81eda76 moved the admin form and the
+            # example config to main but left these server-side
+            # fallbacks at 0, so a request omitting the field still
+            # provisioned a 3MP sensor onto its small stream.
+            "stream_id": int(body.get("stream_id", 1)),
             "livekit_identity": identities[0],
         }
 
@@ -83,7 +88,7 @@ class WarnerVendor(Vendor):
             "device_id": entry["device_id"],
             "name": entry.get("name", "Warner camera"),
             "channel": entry.get("channel", 0),
-            "stream_id": entry.get("stream_id", 0),
+            "stream_id": entry.get("stream_id", 1),
             "livekit_identity": entry.get("livekit_identity"),
         }
 
@@ -202,7 +207,7 @@ class WarnerVendor(Vendor):
             "camera_user": camera.get("camera_user", "admin"),
             "camera_password": camera.get("camera_password", ""),
             "channel": camera.get("channel", 0),
-            "stream_id": camera.get("stream_id", 0),
+            "stream_id": camera.get("stream_id", 1),
             "livekit_url": self._bridge.settings["livekit_url"],
             # Starting size only; the runtime adopts the camera's real
             # frame size on its first frame. It must not be 720p on a 3MP
