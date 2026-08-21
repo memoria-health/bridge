@@ -165,10 +165,13 @@
     if (reconcileRunning) return;
     reconcileRunning = true;
     try {
+      // ONE room per camera. Provisioning used to return one row per
+      // patient, so this was a list; a shared camera now publishes a
+      // single stream into the primary's room.
       const desired = await fetch(`${apiBase}/desired`).then(checkJson);
-      const wanted = new Map(desired.publishers
-        .filter(item => item.desired_state === "connected")
-        .map(item => [item.identity, item]));
+      const spec = desired.publisher;
+      const wanted = new Map(
+        spec && spec.desired_state === "connected" ? [[spec.identity, spec]] : []);
       for (const identity of [...publishers.keys()]) {
         if (!wanted.has(identity)) await disconnectPublisher(identity);
       }

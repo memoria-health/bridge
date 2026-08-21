@@ -100,9 +100,9 @@ class Bridge:
         camera = store.find(request.match_info["camera_id"])
         if not camera:
             raise web.HTTPNotFound(text="camera not found")
+        spec = self.roster.publisher_for(camera)
         return web.json_response({
-            "publishers": [p.to_json()
-                           for p in self.roster.publishers_for(camera)],
+            "publisher": spec.to_json() if spec else None,
             "roster_error": self.roster.error,
             "updated_at": self.roster.updated_at,
         })
@@ -117,9 +117,8 @@ class Bridge:
         body = await request.json()
         identity = str(body.get("identity", ""))
         room = str(body.get("room", ""))
-        allowed = {(p.identity, p.room)
-                   for p in self.roster.publishers_for(camera) if p.connected}
-        if (identity, room) not in allowed:
+        spec = self.roster.publisher_for(camera)
+        if not spec or not spec.connected or (identity, room) != (spec.identity, spec.room):
             raise web.HTTPForbidden(text="publisher is not desired/authorized")
         token = (api.AccessToken(
             self.settings["livekit_api_key"], self.settings["livekit_api_secret"])
@@ -168,8 +167,8 @@ class Bridge:
             **summary,
             "capabilities": list(self.vendor.capabilities),
             "stream_policy": {
-                c["camera_id"]: [p.to_json()
-                                 for p in self.roster.publishers_for(c)]
+                c["camera_id"]: (lambda s: s.to_json() if s else None)(
+                    self.roster.publisher_for(c))
                 for c in configured
             },
             # Per ENTITY, never per process: one row per camera, so a

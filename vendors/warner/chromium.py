@@ -65,9 +65,9 @@ class ChromiumSupervisor:
             '{value: undefined, configurable: false, writable: false});')
         return context
 
-    async def apply(self, plan: dict[str, list[Publisher]]) -> None:
-        wanted = {cid for cid, pubs in plan.items()
-                  if any(p.connected for p in pubs)}
+    async def apply(self, plan: dict[str, Publisher | None]) -> None:
+        wanted = {cid for cid, spec in plan.items()
+                  if spec is not None and spec.connected}
         for camera_id in list(self.pages):
             if camera_id not in wanted:
                 await self._teardown(camera_id)
@@ -82,20 +82,18 @@ class ChromiumSupervisor:
 
         await self._restart_stalled()
 
-    def _note_applied(self, camera_id: str, publishers: list[Publisher]) -> None:
+    def _note_applied(self, camera_id: str, spec: Publisher | None) -> None:
         """Echo back what this camera is actually running under, so the
         backend can compare intent against effect rather than trusting
         that a written row took."""
         health = self.status.get(camera_id)
-        if not health or not publishers:
+        if not health or spec is None:
             return
         health.applied = {
-            "desired_state": "connected",
-            "rooms": [p.room for p in publishers if p.connected],
-            "audio_capture_enabled": all(
-                p.audio_capture_enabled for p in publishers if p.connected),
-            "privacy_enabled": any(
-                p.privacy_enabled for p in publishers if p.connected),
+            "desired_state": "connected" if spec.connected else "disconnected",
+            "room": spec.room,
+            "audio_capture_enabled": spec.audio_capture_enabled,
+            "privacy_enabled": spec.privacy_enabled,
         }
 
     async def _spawn(self, camera_id: str) -> None:

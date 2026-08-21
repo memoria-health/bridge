@@ -22,11 +22,12 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Publisher:
-    """One LiveKit room a physical camera must appear in.
+    """The one LiveKit room a physical camera publishes into.
 
-    A camera can be wanted by several rooms at once (a shared camera in a
-    two-patient home), which is why this is a list per camera and why a
-    vendor must fan one stream out rather than open one per room.
+    One camera is one row, one identity, one room. A camera covering
+    several patients streams to the PRIMARY patient's room only; the
+    other covered patients receive the results, never a second copy of
+    the video.
     """
 
     identity: str
@@ -101,11 +102,11 @@ class Vendor(ABC):
         """Bring up whatever the vendor needs once, before any camera."""
 
     @abstractmethod
-    async def apply(self, plan: dict[str, list[Publisher]]) -> None:
-        """Reconcile to `plan`: camera_id -> the rooms it must publish into.
+    async def apply(self, plan: dict[str, Publisher | None]) -> None:
+        """Reconcile to `plan`: camera_id -> the room it publishes into.
 
-        Called on a loop. Must be idempotent, and must stop a camera that
-        is absent from the plan or whose publishers are all disconnected.
+        Called on a loop. Must be idempotent, and must stop a camera
+        whose entry is None or disconnected.
         """
 
     @abstractmethod

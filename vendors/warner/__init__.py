@@ -50,6 +50,8 @@ class WarnerVendor(Vendor):
     def entry_from_provision(
         self, body: dict[str, Any], identities: list[str], name: str,
     ) -> dict[str, Any]:
+        # Provisioning returns exactly one camera row per physical unit
+        # since 2026-08-19; it used to return one per patient.
         device_key = str(body.get("device_key", "")).strip()
         return {
             "camera_id": self.camera_id(device_key),
@@ -60,7 +62,7 @@ class WarnerVendor(Vendor):
             "camera_password": str(body.get("camera_password", "")),
             "channel": int(body.get("channel", 0)),
             "stream_id": int(body.get("stream_id", 0)),
-            "livekit_identities": identities,
+            "livekit_identity": identities[0],
         }
 
     def public_fields(self, entry: dict[str, Any]) -> dict[str, Any]:
@@ -71,7 +73,7 @@ class WarnerVendor(Vendor):
             "name": entry.get("name", "Warner camera"),
             "channel": entry.get("channel", 0),
             "stream_id": entry.get("stream_id", 0),
-            "livekit_identities": entry.get("livekit_identities", []),
+            "livekit_identity": entry.get("livekit_identity"),
         }
 
     # ── lifecycle ─────────────────────────────────────────────────
@@ -84,7 +86,7 @@ class WarnerVendor(Vendor):
     async def start(self) -> None:
         await self.chromium.start()
 
-    async def apply(self, plan: dict[str, list[Publisher]]) -> None:
+    async def apply(self, plan: dict[str, Publisher | None]) -> None:
         await self.chromium.apply(plan)
 
     def health(self) -> dict[str, EntityHealth]:

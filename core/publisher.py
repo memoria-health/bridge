@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One camera into every room that currently wants it.
+"""One camera into the one room it belongs to.
 
 Publishes from Python through a LiveKit `VideoSource` as an ordinary
 `cam_*` participant, the way `nemara-gateway/publisher.py` already does
@@ -66,39 +66,48 @@ class CameraPublisher:
         self.video_source_factory = video_source_factory
         self.audio_source_factory = audio_source_factory
         self.track_factory = track_factory or _default_track
-        self.rooms: dict[str, _Connection] = {}
+        self.connection: _Connection | None = None
         self.frames_published = 0
         self._capturing = False
 
     # ── reconcile ─────────────────────────────────────────────────
-    async def apply(self, publishers: list[Publisher]) -> None:
-        """Bring reality in line with what the backend wants. Idempotent."""
-        wanted = {p.identity: p for p in publishers if p.connected}
+    async def apply(self, publisher: Publisher | None) -> None:
+        """Bring reality in line with what the backend wants. Idempotent.
 
-        for identity in list(self.rooms):
-            if identity not in wanted:
-                await self._disconnect(identity, "no longer wanted")
+        ONE room, because one physical camera is one row, one identity,
+        one room. A camera covering several patients still publishes a
+        single stream into the primary's room; the others receive the
+        results. Fanning one capture into N rooms was the pre-2026-08-19
+        model and cost N times the ingest for identical footage.
+        """
+        wanted = publisher if (publisher and publisher.connected) else None
 
-        if wanted and not self._capturing:
-            # One capture for every room. Two would be twice the decode,
-            # twice the LiveKit bill, and two chances to drift apart.
-            await self.source.start(
-                want_audio=any(p.audio_capture_enabled for p in wanted.values()))
+        if self.connection and (
+                wanted is None or wanted.identity != self.connection.spec.identity):
+            await self._disconnect(
+                "no longer wanted" if wanted is None else "reassigned")
+
+        if wanted is None:
+            if self._capturing:
+                await self.source.stop()
+                self._capturing = False
+            return
+
+        if not self._capturing:
+            await self.source.start(want_audio=wanted.audio_capture_enabled)
             self._capturing = True
 
-        for identity, spec in wanted.items():
-            if identity not in self.rooms:
-                await self._connect(spec)
+        if self.connection is None:
+            await self._connect(wanted)
 
-        # EVERY pass, for every live room, including ones that were
-        # already connected before this call.
-        for identity, spec in list(wanted.items()):
-            connection = self.rooms.get(identity)
-            if connection:
-                connection.spec = spec
-                await self._enforce(connection)
+        # EVERY pass, including when the room was already connected
+        # before this call. Enforcement that happens once is not
+        # enforcement.
+        if self.connection is not None:
+            self.connection.spec = wanted
+            await self._enforce(self.connection)
 
-        if not self.rooms and self._capturing:
+        if self.connection is None and self._capturing:
             await self.source.stop()
             self._capturing = False
 
@@ -118,13 +127,14 @@ class CameraPublisher:
             except Exception:  # noqa: BLE001 — never completed
                 pass
             return
-        self.rooms[spec.identity] = _Connection(spec, room, video_source, track)
+        self.connection = _Connection(spec, room, video_source, track)
         log(f"[{self.camera_id}] publishing {spec.identity} -> {spec.room}")
 
-    async def _disconnect(self, identity: str, why: str) -> None:
-        connection = self.rooms.pop(identity, None)
+    async def _disconnect(self, why: str) -> None:
+        connection, self.connection = self.connection, None
         if not connection:
             return
+        identity = connection.spec.identity
         try:
             await connection.room.disconnect()
         except Exception:  # noqa: BLE001 — already gone
@@ -143,7 +153,7 @@ class CameraPublisher:
             # subscriber in the room. No picture is the right outcome.
             log(f"[{self.camera_id}] privacy enforcement failed for "
                 f"{connection.spec.identity}: {exc}; tearing down")
-            await self._disconnect(connection.spec.identity, "privacy unenforceable")
+            await self._disconnect("privacy unenforceable")
             return
         await self._enforce_audio(connection)
 
@@ -188,20 +198,20 @@ class CameraPublisher:
 
     # ── frames ────────────────────────────────────────────────────
     async def pump(self) -> None:
-        """Fan decoded frames out to every connected room.
+        """Feed decoded frames to the room.
 
         Deliberately does NOT hold a queue of its own: the source already
         bounds and drops, and a second buffer here would be latency
         nobody asked for plus the unbounded-queue OOM again.
         """
         async for frame in self.source.video_frames():
-            for connection in list(self.rooms.values()):
+            connection = self.connection
+            if connection is not None:
                 connection.video_source.capture_frame(frame)
-            self.frames_published += 1
+                self.frames_published += 1
 
     async def close(self) -> None:
-        for identity in list(self.rooms):
-            await self._disconnect(identity, "shutting down")
+        await self._disconnect("shutting down")
         if self._capturing:
             await self.source.stop()
             self._capturing = False

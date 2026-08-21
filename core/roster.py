@@ -79,11 +79,22 @@ class Roster:
             reasons.append("ai_analysis")
         return bool(reasons), sorted(set(reasons))
 
-    def publishers_for(self, camera: dict[str, Any]) -> list[Publisher]:
-        allowed = set(camera.get("livekit_identities", []))
-        out: list[Publisher] = []
+    def publisher_for(self, camera: dict[str, Any]) -> Publisher | None:
+        """The ONE room this camera publishes into, or None.
+
+        One physical camera is one row, one identity, one room (backend,
+        2026-08-19). Provisioning used to loop over every patient, so a
+        shared camera became N rows publishing N identical streams — N
+        times the ingest and N times the model spend. Multi-patient is
+        handled on the SUBSCRIBER side now: the camera streams to the
+        primary's room and the other covered patients receive the
+        results, never a second copy of the video.
+        """
+        identity = camera.get("livekit_identity")
+        if not identity:
+            return None
         for item in self.items:
-            if item.get("livekit_identity") not in allowed:
+            if item.get("livekit_identity") != identity:
                 continue
             # An EXPLICIT disconnect wins in every mode. Continuous mode
             # used to hardcode connected and never read desired_state, so
@@ -98,7 +109,7 @@ class Roster:
                 connected, reasons = True, ["continuous_bridge"]
             else:
                 connected, reasons = self._policy(item)
-            out.append(Publisher(
+            return Publisher(
                 identity=item["livekit_identity"],
                 room=item["livekit_room"],
                 connected=connected,
@@ -109,9 +120,10 @@ class Roster:
                 # kill; privacy_enabled marks a bathroom/bedroom camera.
                 audio_capture_enabled=bool(item.get("audio_capture_enabled", False)),
                 privacy_enabled=bool(item.get("privacy_enabled", True)),
-            ))
-        return out
+            )
+        return None
 
-    def plan(self, cameras: list[dict[str, Any]]) -> dict[str, list[Publisher]]:
-        """camera_id -> every room it must appear in."""
-        return {c["camera_id"]: self.publishers_for(c) for c in cameras}
+    def plan(self, cameras: list[dict[str, Any]]) -> dict[str, Publisher | None]:
+        """camera_id -> the room it publishes into, or None if no longer
+        on the roster (deleted, or unassigned so it must not publish)."""
+        return {c["camera_id"]: self.publisher_for(c) for c in cameras}
