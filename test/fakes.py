@@ -23,17 +23,23 @@ class FakeParticipant:
         # merely that it happened once at connect time.
         self.permission_calls: list[tuple[bool, tuple[str, ...]]] = []
         self.permissions_raise = False
+        # Call ORDER, so a test can prove privacy lands before the track
+        # rather than merely that both happened.
+        self.order: list[str] = []
 
     async def publish_track(self, track, options=None):
+        self.order.append("publish")
         self.published.append(track)
         return track
 
     async def unpublish_track(self, track):
+        self.order.append("unpublish")
         self.unpublished.append(track)
 
     async def set_track_subscription_permissions(self, all_allowed, perms=None):
         if self.permissions_raise:
             raise RuntimeError("livekit refused the permission update")
+        self.order.append("permissions")
         identities = tuple(p["participantIdentity"] for p in (perms or []))
         self.permission_calls.append((all_allowed, identities))
 

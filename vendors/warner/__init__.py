@@ -112,7 +112,16 @@ class WarnerVendor(Vendor):
                 if spec is None or not spec.connected:
                     continue
                 publisher = self._build_publisher(camera_id)
-            await publisher.apply(spec)
+            try:
+                await publisher.apply(spec)
+            except Exception as exc:  # noqa: BLE001
+                # ISOLATED per camera. An unguarded raise here unwound to
+                # the supervisor's log-and-sleep, so every camera later in
+                # the plan was skipped for that pass — and since the order
+                # is inventory order, the same ones every time. A camera
+                # reclassified as a bathroom behind a failing one never
+                # had its subscription permissions applied at all.
+                log(f"[{camera_id}] reconcile failed: {exc}")
         for camera_id in [c for c in self.publishers if c not in plan]:
             await self._retire(camera_id)
 
@@ -142,15 +151,27 @@ class WarnerVendor(Vendor):
     async def _pump(self, camera_id: str, run: Any, what: str) -> None:
         """One media lane into LiveKit, for as long as this camera exists.
 
+        RESTARTS. It used to log once and return, so a single raise ended
+        the lane permanently — and for audio that reproduced the exact
+        failure the live-lane work was written to prevent: a published
+        track carrying no PCM, silent and indistinguishable from working
+        audio. A capture_frame against a track disposed a moment earlier
+        is enough to trigger it.
+
         Video and audio are separate tasks on purpose: audio failing must
         not take the picture a caregiver is watching.
         """
-        try:
-            await run()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — a dead pump must not kill the loop
-            log(f"[{camera_id}] {what} pump failed: {exc}")
+        while True:
+            try:
+                await run()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — must not kill the loop
+                log(f"[{camera_id}] {what} pump failed, restarting: {exc}")
+            # A pump that returns cleanly has run out of source, which
+            # happens while the decoder is being restarted. Pause before
+            # re-entering so a hard failure cannot spin.
+            await asyncio.sleep(1)
 
     async def _retire(self, camera_id: str) -> None:
         pump = self.pumps.pop(camera_id, None)
@@ -162,6 +183,25 @@ class WarnerVendor(Vendor):
         self.sources.pop(camera_id, None)
 
     def health(self) -> dict[str, EntityHealth]:
+        """The page's view of the camera, plus the publisher's view of
+        LiveKit.
+
+        The page alone is not enough any more. It reports frames arriving
+        from the vendor SDK, which proves the camera is alive — but since
+        publishing moved to Python, the decode, the frame socket, the
+        room and the pump can all be dead behind that green light.
+        """
+        for camera_id, health in self.chromium.status.items():
+            publisher = self.publishers.get(camera_id)
+            if publisher is None:
+                health.publishing = False
+                health.last_publish_at = 0.0
+                continue
+            # Observed, not planned: the publisher writes `applied` only
+            # after the SFU accepted the call.
+            health.applied = publisher.applied
+            health.publishing = publisher.connection is not None
+            health.last_publish_at = publisher.last_published_at
         return self.chromium.status
 
     def report(self, camera_id: str, body: dict[str, Any]) -> None:

@@ -15,7 +15,7 @@ from typing import Any
 from core.config import (
     FRAME_STALL_SECONDS, FRAME_STARTUP_GRACE_SECONDS, PUBLIC_ORIGIN)
 from core.util import log, redact
-from vendors.base import EntityHealth, Publisher
+from vendors.base import EntityHealth, Publisher  # noqa: F401
 
 CAPTURE_WIDTH = int(os.environ.get("WARNER_CAPTURE_WIDTH", "2304"))
 CAPTURE_HEIGHT = int(os.environ.get("WARNER_CAPTURE_HEIGHT", "1296"))
@@ -69,30 +69,37 @@ class ChromiumSupervisor:
                 log(f"[{camera_id}] worker stopped")
 
         for camera_id in wanted:
-            if camera_id in self.pages:
-                self._note_applied(camera_id, plan[camera_id])
-                continue
-            await self._spawn(camera_id)
-            self._note_applied(camera_id, plan[camera_id])
+            if camera_id not in self.pages:
+                await self._spawn(camera_id)
 
         await self._restart_stalled()
 
-    def _note_applied(self, camera_id: str, spec: Publisher | None) -> None:
-        """Echo back what this camera is actually running under, so the
-        backend can compare intent against effect rather than trusting
-        that a written row took."""
-        health = self.status.get(camera_id)
-        if not health or spec is None:
-            return
-        health.applied = {
-            "desired_state": "connected" if spec.connected else "disconnected",
-            "room": spec.room,
-            "audio_capture_enabled": spec.audio_capture_enabled,
-            "privacy_enabled": spec.privacy_enabled,
-        }
-
     async def _spawn(self, camera_id: str) -> None:
         context = await self._new_context()
+        try:
+            page = await self._open_page(context, camera_id)
+        except Exception:
+            # goto raises on a refused connection or after its 30s
+            # default timeout, and without this the context and its
+            # renderer were never recorded anywhere teardown could reach
+            # — leaking ~144MB per retry, every 2 seconds, until the box
+            # ran out of memory.
+            try:
+                await context.close()
+            except Exception as exc:  # noqa: BLE001
+                log(f"[{camera_id}] context close after failed spawn: {exc}")
+            raise
+        now = time.time()
+        self.pages[camera_id] = page
+        self.contexts[camera_id] = context
+        self.started_at[camera_id] = now
+        self.status[camera_id] = EntityHealth(
+            updated_at=now,
+            restarts=self.restarts.get(camera_id, 0),
+            last_restart_at=self.last_restart_at.get(camera_id, 0.0))
+        log(f"[{camera_id}] worker started")
+
+    async def _open_page(self, context: Any, camera_id: str) -> Any:
         page = await context.new_page()
         page.on("console", lambda msg, cid=camera_id:
                 log(f"[{cid}] browser {msg.type}: {redact(msg.text)}"))
@@ -103,15 +110,7 @@ class ChromiumSupervisor:
                 if response.status >= 400 else None)
         await page.goto(f"{PUBLIC_ORIGIN}/runtime?camera_id={camera_id}",
                         wait_until="domcontentloaded")
-        now = time.time()
-        self.pages[camera_id] = page
-        self.contexts[camera_id] = context
-        self.started_at[camera_id] = now
-        self.status[camera_id] = EntityHealth(
-            updated_at=now,
-            restarts=self.restarts.get(camera_id, 0),
-            last_restart_at=self.last_restart_at.get(camera_id, 0.0))
-        log(f"[{camera_id}] worker started")
+        return page
 
     async def _teardown(self, camera_id: str) -> None:
         page = self.pages.pop(camera_id, None)

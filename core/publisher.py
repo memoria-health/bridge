@@ -20,6 +20,7 @@ tested without a network.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Callable
 
 from core.util import log
@@ -68,7 +69,11 @@ class CameraPublisher:
         self.audio_source_factory = audio_source_factory
         self.track_factory = track_factory or _default_track
         self.connection: _Connection | None = None
+        # Observed effect, for the fleet report. Empty until something
+        # has actually been applied.
+        self.applied: dict[str, Any] = {}
         self.frames_published = 0
+        self.last_published_at = 0.0
         self._capturing = False
         # What the SOURCE's audio lane is currently set to; None
         # while not capturing.
@@ -127,6 +132,12 @@ class CameraPublisher:
         try:
             await room.connect(self.livekit_url,
                                self.token_for(spec.identity, spec.room))
+            # BEFORE the track exists. Applying privacy after publishing
+            # leaves a window in which a subscriber can auto-subscribe to
+            # a bathroom camera — bounded by a subprocess spawn and a
+            # server round-trip rather than by anything designed. The
+            # permission is participant-level, so it can be set first.
+            await self._apply_privacy(room, spec)
             video_source = self.video_source_factory(
                 self.source.width, self.source.height)
             track = self.track_factory("video", video_source)
@@ -146,6 +157,8 @@ class CameraPublisher:
         if not connection:
             return
         identity = connection.spec.identity
+        self.applied = {"desired_state": "disconnected", "reason": why}
+        self.last_published_at = 0.0
         try:
             await connection.room.disconnect()
         except Exception:  # noqa: BLE001 — already gone
@@ -166,9 +179,41 @@ class CameraPublisher:
                 f"{connection.spec.identity}: {exc}; tearing down")
             await self._disconnect("privacy unenforceable")
             return
-        await self._enforce_audio(connection)
+        try:
+            await self._enforce_audio(connection)
+        except Exception as exc:  # noqa: BLE001
+            # Same reasoning as privacy. An unpublish that raises against
+            # a room that reconnected under us left audio_track set, so
+            # EVERY later pass raised at the same line and this camera —
+            # and, before the caller isolated them, every camera after it
+            # in the plan — stopped being reconciled at all.
+            log(f"[{self.camera_id}] audio enforcement failed for "
+                f"{connection.spec.identity}: {exc}; tearing down")
+            await self._disconnect("audio unenforceable")
+            return
+        self._note_applied(connection)
+
+    def _note_applied(self, connection: _Connection) -> None:
+        """What actually TOOK EFFECT, not what was asked for.
+
+        The contract calls this the difference between "the backend sent
+        disconnect" and "the camera stopped publishing", so reading it
+        off the plan would make it a restatement of intent. Every value
+        here is observed: privacy only after the SFU accepted the
+        permission call, audio only if a track is genuinely published.
+        """
+        self.applied = {
+            "desired_state": "connected",
+            "room": connection.spec.room,
+            "privacy_enabled": connection.privacy_applied,
+            "audio_capture_enabled": connection.audio_track is not None,
+        }
 
     async def _enforce_privacy(self, connection: _Connection) -> None:
+        await self._apply_privacy(connection.room, connection.spec)
+        connection.privacy_applied = connection.spec.privacy_enabled
+
+    async def _apply_privacy(self, room: Any, spec: Publisher) -> None:
         """Allow-list the AI participants ACTUALLY in the room.
 
         LiveKit matches a permission entry by exact participant identity,
@@ -177,11 +222,11 @@ class CameraPublisher:
         invisible to the AI as well as to people. Rebuilt every pass,
         which is also how a worker that joins later gets allowed.
         """
-        participant = connection.room.local_participant
-        if connection.spec.privacy_enabled:
+        participant = room.local_participant
+        if spec.privacy_enabled:
             allowed = [
                 {"participantIdentity": remote.identity, "allTracksAllowed": True}
-                for remote in connection.room.remote_participants.values()
+                for remote in room.remote_participants.values()
                 if remote.identity.startswith(AI_SUBSCRIBER_PREFIXES)
             ]
             await _maybe_await(
@@ -191,7 +236,6 @@ class CameraPublisher:
             # restricted, or clearing the flag in the app does nothing.
             await _maybe_await(
                 participant.set_track_subscription_permissions(True, []))
-        connection.privacy_applied = connection.spec.privacy_enabled
 
     async def _enforce_audio(self, connection: _Connection) -> None:
         wants = connection.spec.audio_capture_enabled
@@ -203,6 +247,14 @@ class CameraPublisher:
         # capture start, so a site enabling audio later got a published
         # track backed by a lane that was never opened — silent, and
         # indistinguishable from working audio.
+        # Order matters on a KILL: unpublish first, then cut the lane.
+        # Cutting first leaves already-decoded PCM able to reach LiveKit
+        # through pump_audio, because the track is still published.
+        if not wants and connection.audio_track is not None:
+            await participant.unpublish_track(connection.audio_track)
+            connection.audio_track.stop()
+            connection.audio_track = None
+            connection.audio_source = None
         if wants != self._audio_open:
             setter = getattr(self.source, "set_audio", None)
             if setter is not None:
@@ -216,11 +268,6 @@ class CameraPublisher:
             await participant.publish_track(track)
             connection.audio_source = audio_source
             connection.audio_track = track
-        elif not wants and connection.audio_track is not None:
-            await participant.unpublish_track(connection.audio_track)
-            connection.audio_track.stop()
-            connection.audio_track = None
-            connection.audio_source = None
 
     # ── frames ────────────────────────────────────────────────────
     async def pump(self) -> None:
@@ -235,6 +282,10 @@ class CameraPublisher:
             if connection is not None:
                 connection.video_source.capture_frame(frame)
                 self.frames_published += 1
+                # The ONLY evidence that the whole chain works. Frames
+                # arriving at the browser proves the camera is alive; this
+                # proves they reached LiveKit.
+                self.last_published_at = time.time()
 
     async def pump_audio(self) -> None:
         """PCM into LiveKit, only while an audio track is published.

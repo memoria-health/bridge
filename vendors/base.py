@@ -64,9 +64,19 @@ class EntityHealth:
     restarts: int = 0
     last_restart_at: float = 0.0
     applied: dict[str, Any] = field(default_factory=dict)
+    # The DOWNSTREAM half. `last_frame_at` proves the camera is alive and
+    # reaching us; these prove those frames reached LiveKit. Measuring
+    # only the first was right while the page also published — it does
+    # not any more, so the decode, the socket, the room and the pump can
+    # all be dead behind a green light.
+    publishing: bool = False
+    last_publish_at: float = 0.0
 
     def healthy(self, now: float, stall_seconds: float) -> bool:
-        return bool(self.last_frame_at) and (now - self.last_frame_at) <= stall_seconds
+        fresh = bool(self.last_frame_at) and (now - self.last_frame_at) <= stall_seconds
+        landed = bool(self.last_publish_at) and (
+            now - self.last_publish_at) <= stall_seconds
+        return fresh and self.publishing and landed
 
 
 class FrameSource(ABC):

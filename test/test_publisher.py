@@ -359,9 +359,83 @@ async def test_frames_are_dropped_while_no_room_is_connected():
 async def test_audio_is_only_captured_while_a_track_is_published():
     """The lane is cut at the source when the kill arrives, but a few
     already-decoded samples can still be in flight. They must not reach
-    LiveKit after the track is gone."""
+    LiveKit after the track is gone.
+
+    The earlier version of this test asserted `connection.audio_source is
+    None`, which `apply()` alone establishes — deleting the pump call
+    left it green. It proved nothing about the pump.
+    """
     source = fakes.FakeSource()
     p = build(source)
-    await p.apply(pub(audio=False))
+    await p.apply(pub(audio=True))
     await p.pump_audio()
+    captured = p.connection.audio_source.captured
+    assert captured, "PCM must reach LiveKit while the track is published"
+
+    before = len(captured)
+    await p.apply(pub(audio=False))
     assert p.connection.audio_source is None
+    await p.pump_audio()
+    assert len(captured) == before, "no PCM may reach LiveKit after the kill"
+
+
+# ── what actually took effect ─────────────────────────────────────
+async def test_privacy_is_set_before_the_track_is_published():
+    """Applying it after publishing leaves a window where a subscriber
+    can auto-subscribe to a bathroom camera. The permission is
+    participant-level, so it costs nothing to set it first."""
+    p = build()
+    await p.apply(pub(privacy=True))
+    participant = fakes.FakeRoom.instances[0].local_participant
+    assert participant.permission_calls, "privacy must be applied at connect"
+    assert participant.order.index("permissions") < participant.order.index("publish")
+
+
+async def test_applied_reports_effect_not_intent():
+    """The contract calls this the difference between "the backend sent
+    disconnect" and "the camera stopped publishing". Reading it off the
+    plan would make it a restatement of the plan."""
+    p = build()
+    await p.apply(pub(privacy=True, audio=True))
+    assert p.applied["privacy_enabled"] is True
+    assert p.applied["audio_capture_enabled"] is True
+
+
+async def test_applied_says_audio_is_off_when_no_track_exists():
+    p = build()
+    await p.apply(pub(audio=False))
+    assert p.applied["audio_capture_enabled"] is False
+
+
+async def test_applied_does_not_claim_success_when_privacy_failed():
+    """The failure mode this guards: an operator checks whether a
+    bathroom reclassify took, and sees confirmation of something that
+    never happened."""
+    p = build()
+    await p.apply(pub(privacy=True))
+    fakes.FakeRoom.instances[0].local_participant.permissions_raise = True
+    await p.apply(pub(privacy=True))
+    assert p.applied["desired_state"] == "disconnected"
+
+
+async def test_the_kill_unpublishes_before_cutting_the_lane():
+    """Cutting first leaves already-decoded PCM able to reach LiveKit
+    through the pump, because the track is still published."""
+    source = fakes.FakeSource()
+    p = build(source)
+    await p.apply(pub(audio=True))
+    participant = fakes.FakeRoom.instances[0].local_participant
+    await p.apply(pub(audio=False))
+    assert [t.kind for t in participant.unpublished] == ["audio"]
+    assert source.audio_state[-1] is False
+    assert participant.order.index("unpublish") < len(participant.order)
+
+
+async def test_publishing_a_frame_is_what_proves_the_chain_works():
+    """Frames arriving at the browser prove the camera is alive. Only
+    this proves they reached LiveKit."""
+    p = build(fakes.FakeSource([b"a"]))
+    await p.apply(pub())
+    assert p.last_published_at == 0.0
+    await p.pump()
+    assert p.last_published_at > 0.0

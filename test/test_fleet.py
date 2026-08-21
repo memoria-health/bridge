@@ -16,6 +16,7 @@ STALL = 20.0
 
 def health(**kw) -> EntityHealth:
     base = dict(state="publishing", last_frame_at=NOW - 1, frame_count=42,
+                publishing=True, last_publish_at=NOW - 1,
                 applied={"desired_state": "connected", "room": "patient_a",
                          "privacy_enabled": True, "audio_capture_enabled": False})
     base.update(kw)
@@ -41,8 +42,27 @@ def test_every_owned_camera_gets_a_row():
     assert {e["id"] for e in report["entities"]} == {"warner_a", "warner_b"}
 
 
+def test_a_healthy_camera_reports_healthy():
+    """Guards the assertions below from passing for the wrong reason."""
+    assert body()["entities"][0]["healthy"] is True
+
+
 def test_a_stalled_camera_reports_unhealthy_while_the_bridge_is_fine():
     report = body({"warner_a": health(last_frame_at=NOW - 300)})
+    assert report["entities"][0]["healthy"] is False
+
+
+def test_frames_arriving_is_not_enough_to_call_a_camera_healthy():
+    """The page can be happily receiving frames from the camera while
+    the decode, the frame socket, the LiveKit room or the pump is dead.
+    That was the right measurement when the page also published; it
+    stopped being so the moment publishing moved to Python."""
+    report = body({"warner_a": health(publishing=False, last_publish_at=0.0)})
+    assert report["entities"][0]["healthy"] is False
+
+
+def test_a_camera_whose_frames_stopped_reaching_livekit_is_unhealthy():
+    report = body({"warner_a": health(last_publish_at=NOW - 300)})
     assert report["entities"][0]["healthy"] is False
 
 
