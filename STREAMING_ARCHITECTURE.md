@@ -221,9 +221,9 @@ MARGINAL, per camera — this is what sets capacity:
 | stage | memory | CPU |
 |---|---|---|
 | Chromium renderer (P2P transport only) | 144 MB | 0.03 cores |
-| ffmpeg decode (2304x1296 H.265) | 246 MB | 0.11 cores |
+| ffmpeg decode (2304x1296 H.265) | ~206 MB | 0.11 cores |
 | LiveKit encode | (see below) | 0.28 cores |
-| **total** | **~385 MB** | **~0.42 cores** |
+| **total** | **~350 MB** | **~0.42 cores** |
 
 SHARED, once per box: ~390 MB for the Chromium browser process, its GPU
 and network helpers, and the Playwright driver. These are one set
@@ -237,6 +237,20 @@ MOVING frames — a static picture lets the encoder skip nearly all its
 work and understates the cost by an order of magnitude. The encode's
 memory is deliberately not quoted per camera: that run measures one
 process's peak RSS including the LiveKit FFI runtime, which is shared.
+
+Of ffmpeg's share, only 56 MB is the decoder itself. The rest is
+output-side frames, and most of it was ours: asyncio's StreamReader
+defaults to a 64 KB limit, so reading 4.5 MB frames paused and resumed
+the pipe about 67 times PER FRAME. Each pause blocks ffmpeg mid-write,
+its queues back up, and AVBufferPool never releases — the high-water mark
+of a momentary backlog becomes permanent RSS. Sizing the limit to one
+frame takes it to zero pauses. Capping ffmpeg's threads, by contrast,
+made it slightly worse; `video_argv` records every option tried and its
+measured effect so nobody spends the day again.
+
+Worth knowing before planning density: the real driver is how promptly
+the reader drains the pipe, and that gets WORSE as cameras share one
+event loop. Per-camera ffmpeg memory may drift back up on a loaded box.
 
 At ~0.42 cores a six-core box holds roughly ten cameras with headroom,
 and memory is not the binding constraint. Before the browser was stripped
