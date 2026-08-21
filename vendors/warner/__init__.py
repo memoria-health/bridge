@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,14 @@ class WarnerVendor(Vendor):
 
     # ── lifecycle ─────────────────────────────────────────────────
     def preflight(self) -> None:
+        # Fail at startup rather than once per camera. ffmpeg became a
+        # hard dependency when the browser stopped decoding, and a box
+        # missing it would otherwise look healthy while running no
+        # cameras at all.
+        if shutil.which("ffmpeg") is None:
+            raise RuntimeError(
+                "ffmpeg is not on PATH; it decodes every camera "
+                "(apt-get install ffmpeg)")
         if not SDK_DIR.joinpath("connector.js").exists():
             raise RuntimeError(f"Warner SDK not found at {SDK_DIR}; set WARNER_SDK_DIR")
         if not SDK_DIR.joinpath("play.js").exists():
@@ -129,6 +138,13 @@ class WarnerVendor(Vendor):
         camera = store.find(camera_id) or {}
         source = WarnerSource(
             camera_id,
+            # Both were dropped here, so `video_argv` always built the
+            # hevc demuxer at 15fps whatever the row said. A unit
+            # negotiating H.264 decoded zero frames and `video_frames`
+            # blocked on readexactly forever, with a green page light in
+            # front of it.
+            enc=str(camera.get("enc", "H265")),
+            fps=int(camera.get("fps", 15)),
             width=int(camera.get("capture_width", CAPTURE_WIDTH)),
             height=int(camera.get("capture_height", CAPTURE_HEIGHT)),
         )
@@ -206,6 +222,13 @@ class WarnerVendor(Vendor):
 
     def report(self, camera_id: str, body: dict[str, Any]) -> None:
         self.chromium.report(camera_id, body)
+        # The page reports what the camera IS sending; the decoder was
+        # built from what the inventory row SAID it sends. When those
+        # disagree the decode is already broken, and this is the only
+        # place both numbers exist at once.
+        source = self.sources.get(camera_id)
+        if source is not None:
+            source.check_stream(str(body.get("detail", "")))
 
     async def close(self) -> None:
         for camera_id in list(self.publishers):

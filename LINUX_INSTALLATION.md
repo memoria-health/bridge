@@ -257,6 +257,20 @@ sudo systemctl disable --now memoria-bridge
 Only one bridge instance should run. Do not manually start `bridge.py`
 or `python -m http.server` while the systemd service is active.
 
+## 13b. ffmpeg
+
+ffmpeg decodes every camera. `scripts/install.sh` installs it, but if you
+are setting a box up by hand, install it explicitly:
+
+```bash
+sudo apt-get install -y ffmpeg
+```
+
+The bridge refuses to start without it rather than failing per camera,
+because a box that runs no cameras while looking healthy is the worst
+outcome. It did not need ffmpeg before 2026-08-21, when the browser
+still decoded in WebAssembly.
+
 ## 14. Back up protected data
 
 ```bash
