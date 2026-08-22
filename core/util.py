@@ -17,9 +17,15 @@ def log(message: str) -> None:
 
 
 def redact(message: str) -> str:
-    """Strip short-lived LiveKit credentials out of anything we log."""
+    """Strip credentials that travel in a URL out of anything we log.
+
+    `cap` and `key` are here because a browser cannot carry a header, so
+    the bridge's own credentials arrive in query strings — and a page
+    that fails to load reports the URL it was opening.
+    """
     return re.sub(
-        r"([?&](?:access_token|join_request)=)[^&\s}]+", r"\1<redacted>", message)
+        r"([?&](?:access_token|join_request|cap|key)=)[^&\s}]+",
+        r"\1<redacted>", message)
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:

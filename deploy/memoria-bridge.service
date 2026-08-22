@@ -24,6 +24,14 @@ Environment=BRIDGE_HOST=127.0.0.1
 # world-readable.
 # EnvironmentFile=/etc/memoria/bridge.env      # BRIDGE_KEY=...
 Environment=BRIDGE_ALLOW_TAILNET=1
+# Set BRIDGE_TRUST_LOOPBACK=0 if anything proxies to this port — nginx,
+# an ALB, `docker run -p`. Every request then arrives from 127.0.0.1,
+# and loopback stops meaning "this box". Binding wide already turns this
+# off by itself; a proxy on the same host cannot be detected.
+# Environment=BRIDGE_TRUST_LOOPBACK=0
+# The admin page then needs the key in the URL once (http://host/?key=…);
+# a browser cannot put a header on a navigation, and it carries the
+# cookie it gets back to the framed SDK and the provisioning call.
 ExecStart=/opt/memoria-bridge/.venv/bin/python /opt/memoria-bridge/bridge.py
 Restart=always
 RestartSec=3

@@ -15,7 +15,9 @@ import signal
 
 from aiohttp import web
 
-from core.config import HOST, PORT, VENDOR, load_settings, validate_settings
+from core.config import (
+    API_KEY, HOST, PORT, TRUST_LOOPBACK, VENDOR, load_settings,
+    validate_settings)
 from core.server import Bridge, create_app
 from core.util import log
 from vendors import build
@@ -33,6 +35,16 @@ async def main() -> None:
     await runner.setup()
     await web.TCPSite(runner, HOST, PORT).start()
     log(f"{vendor.name} bridge on http://{HOST}:{PORT}/")
+    if not TRUST_LOOPBACK and not API_KEY:
+        # Fail CLOSED and say so. Silently serving the provisioning page
+        # to whoever can reach the port is what this replaces.
+        log("BRIDGE_KEY is unset and loopback is not trusted, so the admin "
+            "page and provisioning are closed to everyone. Cameras already "
+            "provisioned keep publishing.")
+    # Before polling, so a gateways row created as a single-tenant box —
+    # by a bridge that never said what it was — is repaired before the
+    # roster it scopes is asked for.
+    await bridge.enroll_stored()
 
     tasks = [asyncio.create_task(bridge.roster.run()),
              asyncio.create_task(bridge.run_vendor())]

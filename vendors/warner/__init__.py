@@ -16,8 +16,8 @@ from typing import Any
 
 from aiohttp import web
 
-from core import store
-from core.auth import require_local, require_loopback
+from core import auth, store
+from core.auth import require_admin, require_loopback, require_runtime
 from core import livekit_adapters
 from core.publisher import CameraPublisher
 from core.util import log
@@ -251,14 +251,20 @@ class WarnerVendor(Vendor):
         app.router.add_get("/api/debug/{camera_id}/model", self._device_model)
 
     async def _runtime_page(self, request: web.Request) -> web.FileResponse:
-        require_local(request)
-        return web.FileResponse(STATIC_DIR / "runtime.html")
+        """The page the supervisor navigates to. Its URL carries the
+        capability for the one camera it is being opened for; handing
+        that back as a cookie is what lets the page load /sdk assets and
+        open the frame socket, neither of which can carry a header."""
+        require_runtime(request, request.query.get("camera_id", ""))
+        return auth.hand_back(
+            request, web.FileResponse(STATIC_DIR / "runtime.html"))
 
     async def _runtime_config(self, request: web.Request) -> web.Response:
         """The highest-value response on the bridge: it carries the device
         secret and the camera's admin password, because the vendor SDK
-        genuinely needs both. Loopback only, even with a valid API key."""
-        require_loopback(request)
+        genuinely needs both. Loopback only, even with a valid API key,
+        and only for the page holding THIS camera's capability."""
+        require_loopback(request, request.match_info["camera_id"])
         camera = store.find(request.match_info["camera_id"])
         if not camera:
             raise web.HTTPNotFound(text="camera not found")
@@ -282,10 +288,12 @@ class WarnerVendor(Vendor):
         """Encoded frames in from the page, straight into the decoder.
 
         Loopback only: the sender is our own headless page, and this is
-        the one route that injects video into a patient's room.
+        the one route that injects video into a patient's room. The
+        capability rides in the cookie, which is the only credential a
+        browser attaches to a WebSocket handshake.
         """
-        require_loopback(request)
         camera_id = request.match_info["camera_id"]
+        require_loopback(request, camera_id)
         source = self.sources.get(camera_id)
         if source is None:
             raise web.HTTPNotFound(text="camera is not publishing")
@@ -308,7 +316,9 @@ class WarnerVendor(Vendor):
         return socket
 
     async def _page_for(self, request: web.Request) -> Any:
-        require_local(request)
+        # Admin, not runtime: /api/debug is a human asking a live page a
+        # question, and it runs arbitrary vendor calls on that page.
+        require_admin(request)
         page = self.chromium.pages.get(request.match_info["camera_id"])
         if not page:
             raise web.HTTPNotFound(text="camera worker is not active")

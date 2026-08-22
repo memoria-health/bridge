@@ -27,6 +27,27 @@ HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BRIDGE_PORT", "8090"))
 API_KEY = os.environ.get("BRIDGE_KEY", "")
 
+
+def bound_to_loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
+# A loopback peer address proves "this box" only while nothing but this
+# box can reach us. Behind nginx, an ALB or `docker run -p`, EVERY
+# request arrives from 127.0.0.1, so trusting it hands the whole API to
+# the internet. Binding wide is the visible half of that and is detected
+# here; an operator terminating a proxy on the same host has to say so.
+_TRUST = os.environ.get("BRIDGE_TRUST_LOOPBACK", "")
+TRUST_LOOPBACK = _TRUST == "1" if _TRUST else bound_to_loopback(HOST)
+
+# What we tell the backend we are. It scopes a camera roster by gateway
+# alone — many customer accounts on one service — only for a row that
+# declares this; anything else is stored as a single-tenant box.
+SERVICE_KIND = "camera-bridge"
+
 # Tailscale hands every node a 100.64.0.0/10 address. A SECOND factor
 # beside the key, never authentication on its own: a source address can
 # be spoofed, a shared secret cannot be guessed.

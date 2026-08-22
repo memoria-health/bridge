@@ -28,6 +28,23 @@ def find(camera_id: str) -> dict[str, Any] | None:
     return next((c for c in cameras() if c.get("camera_id") == camera_id), None)
 
 
+def account_email() -> str:
+    """The caregiver account this bridge last provisioned onto.
+
+    Kept beside the cameras rather than in identity.json because it is
+    only ever needed when there ARE cameras: enrolment needs an email, a
+    freshly installed bridge has none until a human provisions, and a
+    wiped inventory has nothing left to re-declare.
+    """
+    return str(read_inventory().get("account_email", ""))
+
+
+def set_account_email(email: str) -> None:
+    cfg = read_inventory()
+    cfg["account_email"] = email
+    write_inventory(cfg)
+
+
 def add(entry: dict[str, Any]) -> None:
     cfg = read_inventory()
     cfg.setdefault("version", 1)

@@ -12,6 +12,7 @@ import os
 import time
 from typing import Any
 
+from core import auth
 from core.config import (
     FRAME_STALL_SECONDS, FRAME_STARTUP_GRACE_SECONDS, PUBLIC_ORIGIN)
 from core.util import log, redact
@@ -108,11 +109,19 @@ class ChromiumSupervisor:
         page.on("response", lambda response, cid=camera_id:
                 log(f"[{cid}] browser HTTP {response.status}: {redact(response.url)}")
                 if response.status >= 400 else None)
-        await page.goto(f"{PUBLIC_ORIGIN}/runtime?camera_id={camera_id}",
+        # The URL is the only place we can hand this page a credential:
+        # it cannot set a header on a script tag or a WebSocket
+        # handshake. The page trades it for a cookie on load, and the
+        # grant is good for this camera alone.
+        await page.goto(f"{PUBLIC_ORIGIN}/runtime?camera_id={camera_id}"
+                        f"&{auth.CAP_PARAM}={auth.grant(camera_id)}",
                         wait_until="domcontentloaded")
         return page
 
     async def _teardown(self, camera_id: str) -> None:
+        # Before the page is closed, so a capability never outlives the
+        # page it was minted for.
+        auth.revoke(camera_id)
         page = self.pages.pop(camera_id, None)
         context = self.contexts.pop(camera_id, None)
         self.started_at.pop(camera_id, None)
