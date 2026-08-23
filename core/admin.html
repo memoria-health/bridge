@@ -47,6 +47,60 @@
   </section>
 </main>
 <script>
+// ── trim the vendor SDK page to the three rows we use ──────────────
+//
+// It ships as their full demo: connect/disconnect, open/close video and
+// audio, snapshot, recording, resolution, flip, mirror, alarm push,
+// motion detect. An installer only needs to log in, list devices and
+// pick one — everything else is a button that either does nothing for us
+// or actively fights the bridge for the stream.
+//
+// Done from HERE, by injecting into the iframe (same origin), rather
+// than editing vendors/warner/sdk/index.html. That file is the vendor's
+// and gets replaced wholesale when the SDK is updated; a trim living
+// inside it would vanish silently on the next drop.
+//
+// Keeps an allow-list and everything on its path to <body>, so it does
+// not depend on the vendor's layout staying the way it is today. Re-runs
+// because the device list is rendered after login.
+const SDK_KEEP = ['#loginDiv', '#login-account', '#login-password',
+                  '#loginBtn', '#getObjectBtn', '#dev_id'];
+
+function trimSdkFrame(){
+  const frame = document.getElementById('sdk');
+  const doc = frame && frame.contentDocument;
+  if(!doc || !doc.body) return;
+  doc.querySelectorAll('[data-nemara-keep]')
+     .forEach(el => el.removeAttribute('data-nemara-keep'));
+  SDK_KEEP.forEach(sel => doc.querySelectorAll(sel).forEach(el => {
+    el.setAttribute('data-nemara-keep', 'self');
+    el.querySelectorAll('*').forEach(c => c.setAttribute('data-nemara-keep', 'child'));
+    for(let p = el.parentElement; p && p !== doc.body; p = p.parentElement){
+      if(!p.hasAttribute('data-nemara-keep')) p.setAttribute('data-nemara-keep', 'ancestor');
+    }
+  }));
+  let style = doc.getElementById('nemara-trim');
+  if(!style){
+    style = doc.createElement('style');
+    style.id = 'nemara-trim';
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+  style.textContent =
+    'body > *:not([data-nemara-keep]){display:none!important}' +
+    '[data-nemara-keep="ancestor"] > *:not([data-nemara-keep]){display:none!important}' +
+    'body{padding:10px;font:14px -apple-system,system-ui,sans-serif;background:#fff}' +
+    '#dev_id{min-width:260px}';
+}
+
+window.addEventListener('load', () => {
+  const frame = document.getElementById('sdk');
+  if(frame) frame.addEventListener('load', trimSdkFrame);
+  trimSdkFrame();
+  // The list appears only after a successful login, and the vendor page
+  // re-renders it in place, so one pass at load is not enough.
+  setInterval(trimSdkFrame, 1200);
+});
+
 async function provision(){
   const status=document.getElementById('status');
   const output=document.getElementById('output');

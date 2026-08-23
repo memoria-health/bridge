@@ -40,10 +40,41 @@ class Bridge:
             kind=SERVICE_KIND,
             version=VERSION,
             capabilities=self.vendor.capabilities,
-            entities=self.vendor.health(),
+            entities=self._health_by_backend_id(),
             now=time.time(),
             stall_seconds=FRAME_STALL_SECONDS,
         )
+
+    def _health_by_backend_id(self) -> dict[str, Any]:
+        """Health keyed by the BACKEND's camera uuid.
+
+        Contract rule 3 says an entity id is `<camera uuid>`. We were
+        sending our own vendor key ("warner_8d2506f65170d9f3"), which the
+        backend fed straight into a uuid[] bind — so every poll 500'd on
+        `invalid UUID ... got 23`, and because ONE malformed id fails the
+        whole statement, no camera on this bridge ever had its heartbeat
+        stamped. `last_heartbeat_at` stayed NULL while the camera was
+        plainly publishing: healthy by every other measure, and invisible
+        to the staleness sweep that is supposed to notice a dead one.
+
+        `livekit_identity` is the join: it is the one field both sides
+        agree on, ours from provisioning and theirs from the roster.
+        An entity we cannot map is DROPPED rather than sent under a made-up
+        id — a camera the backend has forgotten should read as absent,
+        not as a stranger.
+        """
+        by_identity = {
+            c.get("livekit_identity"): c.get("camera_id")
+            for c in (self.roster.items or [])
+            if c.get("livekit_identity") and c.get("camera_id")
+        }
+        mapped: dict[str, Any] = {}
+        for vendor_key, health in self.vendor.health().items():
+            configured = store.find(vendor_key) or {}
+            backend_id = by_identity.get(configured.get("livekit_identity"))
+            if backend_id:
+                mapped[backend_id] = health
+        return mapped
 
     async def mint_token(self, identity: str, room: str) -> str:
         """Ask the BACKEND for a token. We hold no signing secret.
@@ -81,9 +112,22 @@ class Bridge:
 
     async def run_vendor(self) -> None:
         """Reconcile the vendor to the backend's wishes, forever."""
-        await self.vendor.start()
+        started = False
         while True:
             try:
+                # INSIDE the loop. This used to run once, above it, so a
+                # failure here killed the task outright and nothing ever
+                # retried or reported: the bridge answered /api/health,
+                # polled the roster, showed its cameras, and published
+                # nothing, forever. A missing Chromium (PLAYWRIGHT_BROWSERS_PATH
+                # unset) is exactly that shape, and it reads as healthy.
+                #
+                # Retried because the causes are transient or fixable in
+                # place — a browser still installing, a machine still
+                # booting. `started` keeps it to once per success.
+                if not started:
+                    await self.vendor.start()
+                    started = True
                 await self.vendor.apply(self.plan())
             except Exception as exc:  # noqa: BLE001 — one bad pass must not end the loop
                 # Redacted because a failed page load reports the URL it
@@ -238,9 +282,16 @@ async def create_app(bridge: Bridge) -> web.Application:
         # a header on a navigation; the cookie handed back is what the
         # framed SDK and the provision fetch below it then carry.
         require_admin(request)
-        return auth.hand_back(
-            request,
-            web.FileResponse(Path(__file__).resolve().parent / "admin.html"))
+        response = web.FileResponse(
+            Path(__file__).resolve().parent / "admin.html")
+        # FileResponse sends ETag + Last-Modified and no Cache-Control, so
+        # a plain refresh gets a 304 and the browser keeps whatever copy it
+        # already had. An installer would then be driving a console that is
+        # a release or two old — with fields we have since removed, or
+        # missing a fix we shipped precisely because the old one misled
+        # them. This page is small and read once per install; never cache it.
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return auth.hand_back(request, response)
 
     app = web.Application(client_max_size=128 * 1024,
                           middlewares=[guard_assets])
