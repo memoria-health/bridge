@@ -19,6 +19,18 @@ sudo systemctl enable --now memoria-warner-bridge
 sudo systemctl status memoria-warner-bridge
 ```
 
+## Do not start it by hand
+
+Always `systemctl`, never `python bridge.py` from a shell. The unit sets
+`PLAYWRIGHT_BROWSERS_PATH` to the vendored `browsers/` directory, and
+without it Playwright looks in `~/.cache/ms-playwright`, finds nothing,
+and `vendor.start()` raises `Executable doesn't exist`.
+
+That failure is invisible from outside. The bridge still answers
+`/api/health`, still polls the roster, still lists its cameras — and
+publishes nothing. Check `entities` in `/api/health`: an empty array
+while cameras are configured means the vendor never started.
+
 Useful commands:
 
 ```bash

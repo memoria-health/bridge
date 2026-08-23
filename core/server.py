@@ -282,15 +282,23 @@ async def create_app(bridge: Bridge) -> web.Application:
         # a header on a navigation; the cookie handed back is what the
         # framed SDK and the provision fetch below it then carry.
         require_admin(request)
-        response = web.FileResponse(
-            Path(__file__).resolve().parent / "admin.html")
-        # FileResponse sends ETag + Last-Modified and no Cache-Control, so
-        # a plain refresh gets a 304 and the browser keeps whatever copy it
-        # already had. An installer would then be driving a console that is
-        # a release or two old — with fields we have since removed, or
-        # missing a fix we shipped precisely because the old one misled
-        # them. This page is small and read once per install; never cache it.
-        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        # Read and returned as a plain body rather than FileResponse.
+        # FileResponse attaches ETag + Last-Modified during prepare() and
+        # answers a conditional request with 304 no matter what
+        # Cache-Control says — so a refresh kept whatever console the
+        # browser already had. Setting no-store alone only worked for
+        # clients polite enough to stop revalidating; sending no
+        # validator at all leaves nothing to revalidate against.
+        #
+        # An installer driving a stale console is the real cost: it can
+        # carry fields we have since removed, or lack the fix we shipped
+        # because the old one misled them. The page is a few KB and read
+        # once per install.
+        body = (Path(__file__).resolve().parent / "admin.html").read_bytes()
+        response = web.Response(
+            body=body, content_type="text/html",
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
         return auth.hand_back(request, response)
 
     app = web.Application(client_max_size=128 * 1024,
