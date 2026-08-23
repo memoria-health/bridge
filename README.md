@@ -3,6 +3,11 @@
 Read `STREAMING_ARCHITECTURE.md` and `TECHNICAL_SOP.md` before production use.
 Ubuntu Server 22.04/24.04 is the target environment.
 
+For a hosted container instead of a box, see `CLOUD_DEPLOYMENT.md` — same
+program, same environment, but the platform names the port and wipes the
+filesystem, so it needs a volume and one replica. The bridge never touches
+the camera's LAN, which is what makes that possible.
+
 For the complete step-by-step installation procedure, see
 `LINUX_INSTALLATION.md`.
 
