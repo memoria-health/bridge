@@ -221,7 +221,7 @@ Linux commands:
 
 ```bash
 curl -s http://127.0.0.1:8090/api/health | python3 -m json.tool
-sudo journalctl -u memoria-warner-bridge --since "10 minutes ago" --no-pager \
+sudo journalctl -u memoria-bridge --since "10 minutes ago" --no-pager \
   | grep -E 'warner video frames|VIDEO STALLED|p2p|fatal|error'
 ```
 

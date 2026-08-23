@@ -262,7 +262,7 @@ canvas per camera.
 The Python service and its headless Chromium workers must remain running. The
 administrator webpage can be closed after provisioning.
 
-Linux uses `memoria-warner-bridge.service`; Windows uses the
+Linux uses `memoria-bridge.service`; Windows uses the
 `MemoriaWarnerBridge` startup task. Both restart the bridge after crashes or
 reboots.
 
@@ -353,7 +353,7 @@ logs redact LiveKit `access_token` and `join_request` query values.
 Commands:
 
 ```bash
-sudo journalctl -u memoria-warner-bridge --since "5 minutes ago" --no-pager \
+sudo journalctl -u memoria-bridge --since "5 minutes ago" --no-pager \
   | grep -E 'warner video frames|worker|Open stream|publishing|HTTP 404|Aborted'
 
 ```
