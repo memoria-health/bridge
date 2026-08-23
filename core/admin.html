@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Nemara Warner Camera Provisioning</title>
+  <title>Nemara Sensor Setup</title>
   <style>
     body{font:15px system-ui,sans-serif;margin:0;background:#f3efe7;color:#171717}
     main{max-width:1100px;margin:28px auto;padding:0 20px}
@@ -17,8 +17,8 @@
   </style>
 </head>
 <body><main>
-  <h1>Nemara Warner Camera Provisioning</h1>
-  <p class="muted">One-time administrator flow: sign in to Warner, load the camera list, select a camera, then provision it to the existing Nemara gateway roster.</p>
+  <h1>Nemara Sensor Setup</h1>
+  <p class="muted">Sign in to Warner, pick the camera, enter the caregiver's setup code, and provision. The code is generated in the Memoria app under <strong>Sensors &rarr; Add a sensor</strong> and lasts five minutes.</p>
 
   <section class="card">
     <h2>1. Warner account and camera</h2>
@@ -28,7 +28,12 @@
 
   <section class="card">
     <h2>2. Provision selected camera</h2>
-    <label for="email">Caregiver email</label>
+    <label for="code">Setup code</label>
+    <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+           autocomplete="one-time-code" placeholder="6 digits"
+           style="font-size:22px;letter-spacing:6px;font-variant-numeric:tabular-nums;width:180px;min-width:0">
+    <p class="muted" style="margin:6px 0 0">Ask the caregiver to open Memoria &rarr; Sensors &rarr; Add a sensor. Expires five minutes after they generate it.</p>
+    <label for="email">Caregiver email <span class="muted">(optional, checked against the code)</span></label>
     <input id="email" type="email" placeholder="caregiver@example.com">
     <label for="name">Camera/room name</label>
     <input id="name" value="Warner Camera">
@@ -53,7 +58,8 @@ async function provision(){
     const deviceKey=(select&&select.value||'').trim();
     if(deviceKey.split(':').length!==3) throw new Error('Log in to Warner and select a camera first.');
     const body={
-      email:document.getElementById('email').value.trim(),
+      pairing_code:document.getElementById('code').value.trim(),
+      email:document.getElementById('email').value.trim()||undefined,
       name:document.getElementById('name').value.trim(),
       device_key:deviceKey,
       camera_user:(doc.getElementById('user')?.value||'admin').trim(),
@@ -61,13 +67,13 @@ async function provision(){
       channel:Number(document.getElementById('channel').value||0),
       stream_id:Number(document.getElementById('stream').value||1),
     };
-    if(!body.email) throw new Error('Caregiver email is required.');
+    if(!/^[0-9]{6}$/.test(body.pairing_code||'')) throw new Error('Enter the 6-digit setup code from the caregiver\'s app.');
     button.disabled=true;status.className='muted';status.textContent='Provisioning…';
     const response=await fetch('/api/provision',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const text=await response.text();let result;try{result=JSON.parse(text)}catch{result={error:text}}
     if(!response.ok) throw new Error(result.error||text||`HTTP ${response.status}`);
     output.hidden=false;output.textContent=JSON.stringify(result,null,2);
-    status.className='ok';status.textContent=result.already_provisioned?'Camera already provisioned.':'Provisioned. The bridge worker will start automatically.';
+    status.className='ok';status.textContent=result.already_provisioned?'Sensor already provisioned.':'Provisioned and streaming. It appears in the caregiver\'s app under Sensors, ready to be assigned.';
   }catch(error){status.className='error';status.textContent=error.message;}
   finally{button.disabled=false;}
 }

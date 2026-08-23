@@ -69,49 +69,12 @@ class Bridge:
         )
         return body["token"]
 
-    async def enroll(self, email: str) -> None:
-        """Declare WHAT this service is, not merely that it exists.
-
-        The backend scopes a service's camera roster by gateway alone —
-        many customer accounts on one host — only when its gateways row
-        says `multi_tenant`, and it sets that from the `service_kind`
-        sent at enrolment. The bridge never sent one, so its row was
-        created as a single-tenant box in one home: provisioning a camera
-        for customer B rebound the row to B, and every camera of customer
-        A dropped off the roster and stopped publishing, with nothing
-        logged anywhere.
-
-        Idempotent at the backend, so it costs one request to say this
-        again on every provision and every boot.
-        """
-        body = await asyncio.to_thread(
-            post_json,
-            f"{self.settings['backend_url']}/v1/gateway/enroll",
-            {"email": email, "service_kind": SERVICE_KIND},
-            {"Authorization": f"Bearer {self.settings['gateway_token']}"},
-        )
-        log(f"enrolled as {SERVICE_KIND}, already_enrolled="
-            f"{body.get('already_enrolled')}, token "
-            f"{fingerprint(self.settings['gateway_token'])}")
-
-    async def enroll_stored(self) -> None:
-        """Re-declare using the email remembered at provisioning time.
-
-        This is the self-heal. Enrolment needs a caregiver email and a
-        fresh install has none, so a row created wrong before anyone
-        declared anything would stay wrong forever — and its owner would
-        only ever see cameras that stopped. Best effort on purpose: a
-        backend that is down must not stop the bridge from booting, and a
-        failure here must not fail a provisioning whose camera row the
-        backend has already written.
-        """
-        email = store.account_email()
-        if not email or not store.cameras():
-            return
-        try:
-            await self.enroll(email)
-        except Exception as exc:  # noqa: BLE001 — retried next boot and next provision
-            log(f"enrolment failed, will retry: {exc}")
+    # `enroll()` and `enroll_stored()` lived here until 2026-08-23.
+    # `/v1/gateway/enroll` is gone: a service binds to an account by
+    # redeeming a setup code at provision time, so there is no longer a
+    # second way to become known — and nothing for a boot-time self-heal
+    # to do. `service_kind` still rides on every provision and on every
+    # fleet poll, which is where the backend re-reads it.
 
     def plan(self) -> dict[str, Publisher | None]:
         return self.roster.plan(store.cameras())
@@ -139,11 +102,13 @@ class Bridge:
         """
         require_admin(request)
         body = await request.json()
+        pairing_code = str(body.get("pairing_code", "")).strip()
         email = str(body.get("email", "")).strip()
         name = str(body.get("name", f"{self.vendor.name} camera")).strip()
         device_key = str(body.get("device_key", "")).strip()
-        if not email:
-            raise web.HTTPBadRequest(text="email is required")
+        if not pairing_code:
+            # The code proves the account; an email does not.
+            raise web.HTTPBadRequest(text="setup code is required")
 
         try:
             camera_id = self.vendor.camera_id(device_key)
@@ -165,7 +130,8 @@ class Bridge:
                 # service_kind on the common path too: this call is what
                 # creates our gateways row on a fresh install, and a row
                 # created without it is a single-tenant box.
-                {"email": email, "room": name, "icon_name": "tv",
+                {"pairing_code": pairing_code, "email": email or None,
+                 "room": name, "icon_name": "tv",
                  "service_kind": SERVICE_KIND},
                 {"Authorization": f"Bearer {self.settings['gateway_token']}"},
             )
@@ -184,7 +150,6 @@ class Bridge:
         # email names a real account. A typo replayed at every boot would
         # be a bridge repeatedly declaring itself to the wrong customer.
         store.set_account_email(email)
-        await self.enroll_stored()
         log(f"[{camera_id}] provisioned with {len(identities)} identity mapping(s)")
         return web.json_response(
             {"ok": True, "camera": self.vendor.public_fields(entry)})

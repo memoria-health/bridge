@@ -44,7 +44,6 @@ async def main() -> None:
     # Before polling, so a gateways row created as a single-tenant box —
     # by a bridge that never said what it was — is repaired before the
     # roster it scopes is asked for.
-    await bridge.enroll_stored()
 
     tasks = [asyncio.create_task(bridge.roster.run()),
              asyncio.create_task(bridge.run_vendor())]

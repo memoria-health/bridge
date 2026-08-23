@@ -1,12 +1,19 @@
-"""What this service tells the backend it IS.
+"""What this service tells the backend, and what proves the account.
 
 A hosted bridge serves many customer accounts at once, and the backend
-scopes a service's camera roster by gateway alone — the multi-tenant
-behaviour — only when its `public.gateways` row says so. It sets that
-from the `service_kind` sent at enrolment, and the bridge sent none. So
-its row was created as a single-tenant BOX in one home: provisioning a
-camera for customer B rebound the whole row to B, and every camera of
-customer A dropped off the roster and stopped publishing, silently.
+scopes a service's roster by gateway alone — the multi-tenant behaviour —
+only when its `public.gateways` row says so. It sets that from the
+`service_kind` on the call that binds it, and the bridge sent none. So its
+row was created as a single-tenant BOX: provisioning for customer B
+rebound the whole row to B, and every sensor of customer A dropped off the
+roster and stopped publishing, silently.
+
+The other half is WHAT proves the account. This sent the caregiver's
+EMAIL, which is on their invoice and in their signature — so anyone who
+knew one could bind this bridge to their home. It sends a five-minute
+setup code the caregiver generated in the app instead, and binding and
+provisioning are one call: `/v1/gateway/enroll` is gone, along with the
+boot-time self-heal that existed only because binding used to be separate.
 """
 from __future__ import annotations
 
@@ -16,9 +23,9 @@ from core import server, store
 from core.server import Bridge
 from vendors.warner import WarnerVendor
 
-ENROLL = "https://backend/v1/gateway/enroll"
 PROVISION = "https://backend/v1/gateway/provision-camera"
 TOKEN = "T" * 43
+CODE = "482913"
 
 
 class Calls(list):
@@ -26,14 +33,12 @@ class Calls(list):
     endpoint received it."""
 
     raises = False
-    fails = ""
 
     def __call__(self, url, body, headers=None):
-        if self.raises or (self.fails and url == self.fails):
+        if self.raises:
             raise RuntimeError("backend unreachable")
         self.append((url, body, headers or {}))
-        return {"ok": True, "already_enrolled": False,
-                "cameras": [{"livekit_identity": "cam_1"}]}
+        return {"ok": True, "cameras": [{"livekit_identity": "cam_1"}]}
 
     def to(self, url: str) -> list[tuple]:
         return [call for call in self if call[0] == url]
@@ -66,87 +71,75 @@ def bridge(monkeypatch, tmp_path):
     return instance, calls
 
 
-async def provision(bridge, email="caregiver@example.com", device="p:d1:s"):
+async def provision(bridge, *, code=CODE, email=None, device="p:d1:s"):
     instance, _ = bridge
-    return await instance.provision(FakeRequest(
-        {"email": email, "name": "Den", "device_key": device}))
+    body = {"name": "Den", "device_key": device}
+    if code is not None:
+        body["pairing_code"] = code
+    if email is not None:
+        body["email"] = email
+    return await instance.provision(FakeRequest(body))
 
 
-# ── the common path: say what we are while claiming a camera ──────
+@pytest.mark.asyncio
+async def test_provisioning_carries_the_setup_code(bridge):
+    """The code is what binds this bridge to a customer's account."""
+    _instance, calls = bridge
+    await provision(bridge)
+
+    sent = calls.to(PROVISION)
+    assert len(sent) == 1
+    assert sent[0][1]["pairing_code"] == CODE
+
+
+@pytest.mark.asyncio
 async def test_provisioning_declares_the_service_kind(bridge):
-    """Without this the backend has no way to tell a hosted bridge from a
-    Pi in someone's living room, and defaults to the living room."""
-    _, calls = bridge
+    """Without it the row is born a single-tenant box and the next
+    customer's provision takes this one's sensors off the roster."""
+    _instance, calls = bridge
     await provision(bridge)
     assert calls.to(PROVISION)[0][1]["service_kind"] == "camera-bridge"
 
 
-async def test_provisioning_also_enrols_explicitly(bridge):
-    """provision-camera creating the row as a side effect is what let a
-    row exist that had never been told what it belonged to."""
-    _, calls = bridge
-    await provision(bridge)
-    enrolments = calls.to(ENROLL)
-    assert len(enrolments) == 1
-    assert enrolments[0][1] == {"email": "caregiver@example.com",
-                                "service_kind": "camera-bridge"}
-    assert enrolments[0][2]["Authorization"] == f"Bearer {TOKEN}"
+@pytest.mark.asyncio
+async def test_no_code_never_reaches_the_backend(bridge):
+    """Refused here, not merely refused there.
+
+    An installer who has not been given a code should be told so by the
+    page in front of them, and a request that cannot succeed should not
+    be sent at all.
+    """
+    _instance, calls = bridge
+    with pytest.raises(Exception):
+        await provision(bridge, code=None)
+    assert calls.to(PROVISION) == []
 
 
-# ── the ordering problem: a fresh bridge has no email ─────────────
-async def test_the_provisioning_email_is_remembered(bridge):
-    """Enrolment needs a caregiver email and a freshly installed bridge
-    has none until a human provisions. Remembering it is the only way a
-    reboot can re-declare what we are without one."""
-    await provision(bridge)
-    assert store.account_email() == "caregiver@example.com"
+@pytest.mark.asyncio
+async def test_the_email_is_optional(bridge):
+    """It is a typo check on the code, never the thing that identifies
+    the account — so an installer who was given only a code can finish."""
+    _instance, calls = bridge
+    await provision(bridge, email=None)
+    body = calls.to(PROVISION)[0][1]
+    assert body["pairing_code"] == CODE
+    assert body.get("email") is None
 
 
-async def test_a_bridge_that_owns_cameras_re_enrols_on_boot(bridge):
-    """The self-heal. A row created as a single-tenant box before this
-    fix stays wrong forever otherwise, and its owner never sees why the
-    cameras stopped."""
-    instance, calls = bridge
-    await provision(bridge)
-    calls.clear()
-
-    await instance.enroll_stored()
-
-    assert calls.to(ENROLL), "a bridge with cameras must re-declare itself"
-    assert not calls.to(PROVISION), "boot must not mint new camera rows"
-
-
-async def test_a_bridge_with_no_cameras_stays_quiet(bridge):
-    """Nothing to repair, and no email that could be replayed against the
-    wrong account."""
-    instance, calls = bridge
-    await instance.enroll_stored()
-    assert calls == []
-
-
-async def test_a_backend_that_is_down_at_boot_does_not_stop_the_bridge(bridge):
-    instance, calls = bridge
-    await provision(bridge)
-    calls.raises = True
-    await instance.enroll_stored()      # must not raise
-
-
-async def test_a_failed_enrolment_does_not_fail_the_provisioning(bridge):
-    """The camera row already exists at that point. Returning an error
-    would tell the operator to provision again, which mints a second one."""
-    _, calls = bridge
-    calls.fails = ENROLL
-    response = await provision(bridge)
-    assert response.status == 200
-    assert calls.to(PROVISION), "the camera was still claimed"
-
-
-# ── never log the credential ──────────────────────────────────────
-async def test_enrolment_never_logs_the_token(bridge, monkeypatch):
-    instance, _ = bridge
+@pytest.mark.asyncio
+async def test_the_token_is_never_logged(bridge, monkeypatch, capsys):
+    """A bridge's bearer is fleet-wide until it is rotated."""
     lines: list[str] = []
     monkeypatch.setattr(server, "log", lines.append)
-    await instance.enroll("caregiver@example.com")
-    printed = "\n".join(lines)
-    assert printed, "enrolment is worth one line in the log"
-    assert TOKEN not in printed
+    await provision(bridge)
+    assert not any(TOKEN in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_a_backend_that_is_down_surfaces_as_a_failure(bridge):
+    """The installer is standing in the house: a provision that did not
+    happen must not read as one that did."""
+    _instance, calls = bridge
+    calls.raises = True
+    with pytest.raises(Exception):
+        await provision(bridge)
