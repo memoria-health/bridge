@@ -17,6 +17,7 @@ from aiohttp import web
 from aiohttp.web_urldispatcher import StaticResource
 
 from core import auth, fleet, store
+from core.publisher import encoder_stats, encoder_stats_raw
 from core.auth import require_admin, require_asset, require_runtime
 from core.config import FRAME_STALL_SECONDS, SERVICE_KIND, VERSION
 from core.identity import fingerprint
@@ -264,6 +265,14 @@ class Bridge:
             # about a camera, which is the exact confusion this endpoint
             # exists to resolve.
             "entities": self.fleet_report()["entities"],
+            # WebRTC's own account of the outgoing video. The one field
+            # that says WHY a resolution dropped instead of leaving it to
+            # be guessed at.
+            "encoders": {
+                cam: await encoder_stats_raw(pub.connection)
+                for cam, pub in getattr(
+                    self.vendor, "publishers", {}).items()
+            },
         })
 
 

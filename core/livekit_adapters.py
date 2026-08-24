@@ -75,3 +75,23 @@ def track(kind: str, source: Any) -> Any:
     if kind == "video":
         return rtc.LocalVideoTrack.create_video_track("camera", underlying)
     return rtc.LocalAudioTrack.create_audio_track("camera-audio", underlying)
+
+
+def publish_options(max_framerate: int, max_bitrate: int):
+    """Explicit video encoding for a published track.
+
+    With no options the SDK picks a bitrate from the resolution, and for
+    a 2304x1296 source that target is far below what the picture needs.
+    libwebrtc answers a starved target by dropping RESOLUTION, so the
+    stream oscillates — measured 2026-08-24 as 2304x1296 -> 320x180 and
+    back, three or four times a minute, while the gateway's Tapo (which
+    HAS pinned its encoding since 2026-07-27) never moved once.
+    """
+    from livekit import rtc
+
+    return rtc.TrackPublishOptions(
+        source=rtc.TrackSource.SOURCE_CAMERA,
+        video_encoding=rtc.VideoEncoding(
+            max_framerate=max_framerate, max_bitrate=max_bitrate,
+        ),
+    )

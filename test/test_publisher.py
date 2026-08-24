@@ -178,15 +178,48 @@ async def test_an_ai_worker_joining_later_is_picked_up():
 
 
 async def test_privacy_is_reasserted_on_every_reconcile():
-    """Asserted once at connect is not enforcement. The gateway
-    re-asserts every poll and this must match it, or a permission the
-    SFU dropped or a flag flipped mid-stream is never re-applied."""
+    """Asserted once at connect is not enforcement: a RESTRICTION the
+    SFU drops is a leak, so it must keep being re-applied.
+
+    Narrowed 2026-08-24 from "every poll" to "every
+    _PRIVACY_REASSERT_S". The reconcile runs every two seconds and each
+    permission call makes the SFU re-evaluate the publisher's tracks,
+    which resets every subscriber's layer request to the SDK default —
+    the smallest rung. Measured on the identity service: 2304x1296 ->
+    320x180 and back, endlessly, ~14% of the time spent collapsed and
+    nothing detectable while it was. The gateway, which re-applies only
+    on connect or change, never moved once.
+
+    The property that matters is unchanged: a dropped restriction still
+    heals, and a flag flipped mid-stream is applied immediately because
+    the desired set is recomputed every pass and sent the moment it
+    differs. What stopped is re-sending an IDENTICAL set 30 times a
+    minute."""
+    import core.publisher as publisher
+
     p = build()
     await p.apply(pub(privacy=True))
     await p.apply(pub(privacy=True))
-    await p.apply(pub(privacy=True))
     calls = fakes.FakeRoom.instances[0].local_participant.permission_calls
-    assert len(calls) >= 3
+    assert len(calls) == 1, "an unchanged set must not be re-sent every pass"
+
+    p._privacy_sent_at -= publisher._PRIVACY_REASSERT_S + 1
+    await p.apply(pub(privacy=True))
+    assert len(calls) == 2, "a restriction must still heal on its own"
+
+
+async def test_an_unrestricted_camera_is_not_re_permissioned():
+    """THE fix. allow-all is the SFU's default, so re-sending it heals
+    nothing and costs every subscriber its layer."""
+    import core.publisher as publisher
+
+    p = build()
+    await p.apply(pub(privacy=False))
+    calls = fakes.FakeRoom.instances[0].local_participant.permission_calls
+    p._privacy_sent_at -= publisher._PRIVACY_REASSERT_S + 1
+    await p.apply(pub(privacy=False))
+    await p.apply(pub(privacy=False))
+    assert len(calls) == 1
 
 
 async def test_privacy_turned_on_mid_stream_takes_effect_immediately():
@@ -204,10 +237,17 @@ async def test_privacy_turned_on_mid_stream_takes_effect_immediately():
 async def test_a_failed_privacy_enforcement_tears_the_publisher_down():
     """Failing open here publishes a bathroom camera to every subscriber
     in the room. No picture is the correct outcome."""
+    import core.publisher as publisher
+
     p = build()
     await p.apply(pub(privacy=True))
     room = fakes.FakeRoom.instances[0]
     room.local_participant.permissions_raise = True
+    # An unchanged restriction is now re-sent on a timer rather than
+    # every pass, so the failure surfaces on the next re-assert. The
+    # property is unchanged, its window is bounded by
+    # _PRIVACY_REASSERT_S instead of by the 2s reconcile.
+    p._privacy_sent_at -= publisher._PRIVACY_REASSERT_S + 1
     await p.apply(pub(privacy=True))
     assert room.disconnected is True
 
@@ -416,9 +456,14 @@ async def test_applied_does_not_claim_success_when_privacy_failed():
     """The failure mode this guards: an operator checks whether a
     bathroom reclassify took, and sees confirmation of something that
     never happened."""
+    import core.publisher as publisher
+
     p = build()
     await p.apply(pub(privacy=True))
     fakes.FakeRoom.instances[0].local_participant.permissions_raise = True
+    # Same reason as the teardown test: an unchanged restriction is
+    # re-sent on a timer now, so age it to the point where it is due.
+    p._privacy_sent_at -= publisher._PRIVACY_REASSERT_S + 1
     await p.apply(pub(privacy=True))
     assert p.applied["desired_state"] == "disconnected"
 

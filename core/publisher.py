@@ -31,6 +31,11 @@ from vendors.base import Publisher
 # detector_worker_ name — the backend's startup zombie reaper kicks
 # detector_worker_* participants it did not spawn. Allow-listing one
 # prefix blinds the other.
+# How often a RESTRICTIVE permission set is re-sent even when
+# unchanged. Self-heals a permission the SFU dropped without
+# resetting every subscriber's layer every two seconds.
+_PRIVACY_REASSERT_S = 30.0
+
 AI_SUBSCRIBER_PREFIXES = ("detector_worker_", "identity-service")
 
 
@@ -63,6 +68,7 @@ class CameraPublisher:
         audio_source_factory: Callable[[], Any] | None = None,
         track_factory: Callable[[str, Any], Any] | None = None,
         permission_factory: Callable[[str], Any] | None = None,
+        publish_options_factory: Callable[[int, int], Any] | None = None,
     ):
         self.camera_id = camera_id
         self.source = source
@@ -73,6 +79,8 @@ class CameraPublisher:
         self.audio_source_factory = audio_source_factory
         self.track_factory = track_factory or _default_track
         self.permission_factory = permission_factory or _default_permission
+        self.publish_options_factory = (
+            publish_options_factory or _default_publish_options)
         self.connection: _Connection | None = None
         # Observed effect, for the fleet report. Empty until something
         # has actually been applied.
@@ -83,6 +91,10 @@ class CameraPublisher:
         # What the SOURCE's audio lane is currently set to; None
         # while not capturing.
         self._audio_open: bool | None = None
+        # Last permission set actually sent, so an unchanged one is not
+        # re-sent every two seconds. None = nothing sent yet.
+        self._privacy_sent: tuple | None = None
+        self._privacy_sent_at = 0.0
 
     # ── reconcile ─────────────────────────────────────────────────
     async def apply(self, publisher: Publisher | None) -> None:
@@ -162,7 +174,35 @@ class CameraPublisher:
             video_source = self.video_source_factory(
                 self.source.width, self.source.height)
             track = self.track_factory("video", video_source)
-            await room.local_participant.publish_track(track)
+            # EXPLICIT ENCODING, not the SDK defaults. The gateway learned
+            # this on 2026-07-27 and the bridge never got the fix: with no
+            # options the SDK picks a bitrate for the resolution, and for a
+            # 2304x1296 source that target is far below what the picture
+            # needs. libwebrtc's rate control answers a starved target by
+            # dropping RESOLUTION, so the stream oscillates.
+            #
+            # Measured 2026-08-24, this camera, arriving at the identity
+            # service: 2304x1296 -> 320x180 -> 2304x1296 -> 320x180, three
+            # or four collapses a minute, while the gateway's Tapo never
+            # left 1920x1080 once. Everything downstream followed it —
+            # nothing is detectable at 320x180, so tracks cleared, the
+            # room read as empty, and the picture went soft.
+            #
+            # NOT a CPU limit: the publisher sat at 29-68% of ONE core on a
+            # 14-core machine throughout, and the camera fed it a steady
+            # 15fps. The encoder was not struggling; it was under-targeted.
+            #
+            # 5 Mbps because this source is 44% more pixels than the
+            # gateway's 1080p at 4 Mbps. max_framerate follows the source
+            # rather than a constant: this vendor is 15fps and a wrong
+            # value here is what CFR output would be re-timed against.
+            await room.local_participant.publish_track(
+                track,
+                self.publish_options_factory(
+                    int(max(1, round(self.source.fps or 15))),
+                    _VIDEO_MAX_BITRATE,
+                ),
+            )
         except Exception as exc:  # noqa: BLE001 — retried on the next pass
             log(f"[{self.camera_id}] connect {spec.identity} failed: {exc}")
             try:
@@ -184,6 +224,12 @@ class CameraPublisher:
             await connection.room.disconnect()
         except Exception:  # noqa: BLE001 — already gone
             pass
+        # A fresh room has no memory of what we last sent, so the next
+        # _apply_privacy must actually send rather than skip as
+        # unchanged. Forgetting here is what stops the change-guard
+        # turning into a permanently-unenforced camera.
+        self._privacy_sent = None
+        self._privacy_sent_at = 0.0
         for track in (connection.video_track, connection.audio_track):
             # `stop()` is a browser-SDK idiom; the Python SDK's
             # LocalVideoTrack has no such method and releases with the
@@ -251,6 +297,43 @@ class CameraPublisher:
         which is also how a worker that joins later gets allowed.
         """
         participant = room.local_participant
+        # ONLY WHEN IT CHANGES. This runs on every reconcile pass — every
+        # two seconds — and used to re-send the permission set each time
+        # even when nothing had moved. Every one of those calls makes the
+        # SFU re-evaluate the publisher's tracks, and a subscriber's
+        # track settings do not survive that: they fall back to the
+        # SDK default, which the SFU reads as the SMALLEST layer.
+        #
+        # Measured 2026-08-24 on the identity service: 2304x1296 ->
+        # 320x180 and back, over and over, ~14% of the time spent
+        # collapsed. At 320x180 there is nothing to detect, so tracks
+        # cleared and the room read as empty every time it happened.
+        # The gateway re-applies only on connect or change and its
+        # camera never moved off 1920x1080 once — that was the whole
+        # difference between the two.
+        #
+        # "Enforcement that happens once is not enforcement" still
+        # holds, and is why the DESIRED set is recomputed every pass: a
+        # worker that joins later changes it and is applied immediately.
+        # Re-sending an IDENTICAL set is not enforcement, it is churn.
+        want_all = not spec.privacy_enabled
+        allow_ids = tuple(sorted(
+            remote.identity
+            for remote in room.remote_participants.values()
+            if remote.identity.startswith(AI_SUBSCRIBER_PREFIXES)
+        )) if spec.privacy_enabled else ()
+        now = time.time()
+        unchanged = self._privacy_sent == (want_all, allow_ids)
+        # A RESTRICTION that the SFU drops is a privacy leak, so that one
+        # keeps healing itself — just at 30s instead of every 2s. An
+        # allow-all that gets dropped leaves the DEFAULT, which is
+        # allow-all, so re-sending it protects nothing and costs the
+        # subscriber its layer every time.
+        due = (not want_all) and (now - self._privacy_sent_at >= _PRIVACY_REASSERT_S)
+        if unchanged and not due:
+            return
+        self._privacy_sent = (want_all, allow_ids)
+        self._privacy_sent_at = now
         if spec.privacy_enabled:
             allowed = [
                 self.permission_factory(remote.identity)
@@ -363,6 +446,81 @@ async def _maybe_await(result: Any) -> Any:
     if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
         return await result
     return result
+
+
+# 5 Mbps: this vendor's source is 2304x1296, 44% more pixels than the
+# gateway's 1080p at 4 Mbps.
+_VIDEO_MAX_BITRATE = 5_000_000
+
+
+def _default_publish_options(max_framerate: int, max_bitrate: int) -> Any:
+    """Real LiveKit publish options. Lazy import for the same reason as
+    the track factory — these rules stay testable without LiveKit."""
+    from core.livekit_adapters import publish_options
+    return publish_options(max_framerate, max_bitrate)
+
+
+async def encoder_stats(conn: Any) -> dict:
+    """What WebRTC itself says about the outgoing video.
+
+    `quality_limitation_reason` is the only authoritative answer to "why
+    did the resolution drop" — cpu, bandwidth, or none. Without it every
+    explanation is a guess, and on 2026-08-24 four successive guesses
+    (the SFU choosing, a subscriber's pin, bursty source frames, a
+    starved bitrate target) were each measured and each wrong while the
+    stream kept collapsing 2304x1296 -> 320x180 several times a minute.
+    """
+    track = getattr(conn, "video_track", None) if conn else None
+    if track is None or not hasattr(track, "get_stats"):
+        return {}
+    try:
+        out: dict = {}
+        for st in await track.get_stats():
+            rid = str(getattr(st, "rid", "") or getattr(st, "id", "?"))
+            row = {}
+            for field in ("quality_limitation_reason", "frame_width",
+                          "frame_height", "frames_per_second",
+                          "target_bitrate", "frames_encoded"):
+                val = getattr(st, field, None)
+                if val is not None:
+                    row[field] = str(val)[:60]
+            if row:
+                out[rid[:40]] = row
+        return out
+    except Exception as exc:  # noqa: BLE001 — telemetry, never fatal
+        return {"error": f"{type(exc).__name__}: {exc}"[:120]}
+
+
+async def encoder_stats_raw(conn: Any) -> Any:
+    """Unfiltered, for one diagnosis. My field-name guesses returned an
+    empty dict and an empty dict is indistinguishable from "no limit"."""
+    track = getattr(conn, "video_track", None) if conn else None
+    if track is None or not hasattr(track, "get_stats"):
+        return {"no_track": True}
+    try:
+        out = []
+        for st in await track.get_stats():
+            # protobuf with a oneof: ListFields() yields only what is
+            # actually set. vars() returns the class attributes, which is
+            # why the first read came back as a list of type names.
+            for desc, val in st.ListFields():
+                if desc.name not in ("outbound_rtp",):
+                    continue
+                row = {}
+                for f, v in val.ListFields():
+                    if hasattr(v, "ListFields"):
+                        for f2, v2 in v.ListFields():
+                            if f2.name in (
+                                "rid", "frame_width", "frame_height",
+                                "frames_per_second", "target_bitrate",
+                                "quality_limitation_reason",
+                                "frames_encoded", "active",
+                            ):
+                                row[f2.name] = str(v2)[:40]
+                out.append(row)
+        return out[:8]
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{type(exc).__name__}: {exc}"[:160]}
 
 
 def _default_permission(identity: str) -> Any:
