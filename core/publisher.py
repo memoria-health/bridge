@@ -209,6 +209,19 @@ class CameraPublisher:
                 await room.disconnect()
             except Exception:  # noqa: BLE001 — never completed
                 pass
+            # Same reason `_disconnect` forgets it, and this path cannot
+            # borrow that one: it returns with `self.connection` still
+            # None, so there is no connection to tear down and
+            # `_disconnect` early-returns. Privacy is applied BEFORE the
+            # track on purpose, so a failure in publish_track lands here
+            # having already recorded "sent" against a room that is now
+            # gone — and the retry's fresh session would be skipped as
+            # unchanged and left on the SFU default, which is allow-all.
+            # On a bathroom camera that is a leak, self-healing only
+            # when the 30s re-assert comes due, timed from the attempt
+            # that failed rather than from the one that worked.
+            self._privacy_sent = None
+            self._privacy_sent_at = 0.0
             return
         self.connection = _Connection(spec, room, video_source, track)
         log(f"[{self.camera_id}] publishing {spec.identity} -> {spec.room}")

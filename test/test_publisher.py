@@ -532,3 +532,42 @@ async def test_privacy_never_interrupts_the_stream():
     await p.apply(pub(privacy=False))
     assert room.disconnected is False
     assert len(fakes.FakeRoom.instances) == 1
+
+
+async def test_a_connect_that_dies_after_privacy_still_restricts_the_retry():
+    """A private camera must not come back allow-all because the LAST
+    attempt already sent the restriction.
+
+    `_apply_privacy` runs BEFORE `publish_track`, deliberately, so no
+    subscriber can reach a bathroom camera in the gap. That ordering
+    means a failure in publish_track leaves the change-guard saying
+    "already sent" while the room it was sent to is gone. `_disconnect`
+    forgets the guard for exactly this reason, but a connect that dies
+    partway never reaches `_disconnect` — it returns with
+    `self.connection` still None, so there is no connection to tear
+    down.
+
+    The result was a fresh LiveKit session carrying the SFU default,
+    which is allow-all, on a camera the caregiver had marked private.
+    Self-healing after the 30s re-assert, and the 30s was measured from
+    the FAILED attempt, not the retry.
+    """
+    p = build()
+
+    class DiesAfterPrivacy(fakes.FakeRoom):
+        def __init__(self):
+            super().__init__()
+            self.local_participant.publish_raises = True
+
+    p.room_factory = DiesAfterPrivacy
+    await p.apply(pub(privacy=True))
+    assert p.connection is None, "the half-connect should not have stuck"
+
+    # The retry gets a healthy room. It must restrict it.
+    p.room_factory = fakes.FakeRoom
+    await p.apply(pub(privacy=True))
+    assert p.connection is not None
+
+    calls = p.connection.room.local_participant.permission_calls
+    assert calls, "the new session was never given the restriction"
+    assert calls[0][0] is False, "the new session was left allow-all"

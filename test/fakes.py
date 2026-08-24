@@ -34,11 +34,16 @@ class FakeParticipant:
         # merely that it happened once at connect time.
         self.permission_calls: list[tuple[bool, tuple[str, ...]]] = []
         self.permissions_raise = False
+        # Fail the publish, and only the publish — the one way to reach
+        # a connect that dies AFTER privacy has already been applied.
+        self.publish_raises = False
         # Call ORDER, so a test can prove privacy lands before the track
         # rather than merely that both happened.
         self.order: list[str] = []
 
     async def publish_track(self, track, options=None):
+        if self.publish_raises:
+            raise RuntimeError("encoder gone")
         self.order.append("publish")
         self.published.append(track)
         return FakePublication(track)
