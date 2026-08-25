@@ -41,6 +41,27 @@ if [[ -z "${LIVEKIT_URL:-}" ]]; then
   exit 1
 fi
 
+# Match the gateway's Tapo: 1920x1080, not the Warner's native
+# 2304x1296.
+#
+# Both cameras publish simulcast, so both CAN be downshifted by the SFU
+# when it thinks a subscriber's downlink is short. Measured 2026-08-25
+# over the same window, frames arriving at the identity service:
+#
+#     bedroom (Tapo, 1080p)     1920x1080 x48   640x360 x12   320x180 x7
+#     TV Room (Warner, 1296p)   2304x1296 x628  640x360 x355  320x180 x511
+#
+# 19 downshifts against 866. The Tapo is not immune, it just rarely
+# crosses the line; the Warner carries 44% more pixels on the same link
+# and crosses it constantly. WebRTC's own publisher stats say the
+# encoder is fine (quality_limitation_reason=0 on all three layers), so
+# the pixels are not the encoder's problem — they are the link's.
+#
+# Nothing downstream needs 2304: face detection works on the bedroom's
+# 1080p all day.
+export WARNER_CAPTURE_WIDTH="${WARNER_CAPTURE_WIDTH:-1920}"
+export WARNER_CAPTURE_HEIGHT="${WARNER_CAPTURE_HEIGHT:-1080}"
+
 # Chromium is vendored under browsers/ so a machine without the shared
 # Playwright cache still runs. Without this the launch fails on every
 # reconcile pass, forever, and the only symptom is a camera that never
