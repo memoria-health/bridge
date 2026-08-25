@@ -1,0 +1,54 @@
+[Unit]
+Description=Memoria camera bridge (vendor cameras into LiveKit)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=memoria
+Group=memoria
+WorkingDirectory=/opt/memoria-bridge
+Environment=BRIDGE_GATEWAY_CONFIG=/opt/memoria-bridge/cameras.json
+Environment=BRIDGE_INVENTORY=/opt/memoria-bridge/inventory.json
+Environment=BRIDGE_ORIGIN=http://127.0.0.1:8090
+Environment=BRIDGE_VENDOR=warner
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/memoria-bridge/browsers
+# Listen on loopback only. The admin/runtime API hands out camera
+# credentials and mints LiveKit publish tokens; reach it over the
+# tailnet (see below), never by binding a public interface.
+Environment=BRIDGE_HOST=127.0.0.1
+# Remote access, defence in depth. BOTH are required for an off-box
+# caller: the shared secret proves who you are, the tailnet range
+# proves where you are. Drop BRIDGE_KEY into an EnvironmentFile
+# (0600, root-owned) rather than inlining it here — unit files are
+# world-readable.
+# EnvironmentFile=/etc/memoria/bridge.env      # BRIDGE_KEY=...
+Environment=BRIDGE_ALLOW_TAILNET=1
+# Set BRIDGE_TRUST_LOOPBACK=0 if anything proxies to this port — nginx,
+# an ALB, `docker run -p`. Every request then arrives from 127.0.0.1,
+# and loopback stops meaning "this box". Binding wide already turns this
+# off by itself; a proxy on the same host cannot be detected.
+# Environment=BRIDGE_TRUST_LOOPBACK=0
+# The admin page then needs the key in the URL once (http://host/?key=…);
+# a browser cannot put a header on a navigation, and it carries the
+# cookie it gets back to the framed SDK and the provisioning call.
+ExecStart=/opt/memoria-bridge/.venv/bin/python /opt/memoria-bridge/bridge.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+# Chromium runs --no-sandbox (unavoidable in a container/service), so a
+# decoder bug in untrusted video lands in this process. Give it as
+# little as possible to reach from there.
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/opt/memoria-bridge
+
+[Install]
+WantedBy=multi-user.target

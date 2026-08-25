@@ -2,10 +2,17 @@
 browsers/
 logs/*
 !logs/.gitkeep
+# Both hold live credentials: cameras.json the backend/LiveKit secrets,
+# inventory.json each camera's device key and admin password.
 cameras.json
-warner_cameras.json
+inventory.json
+# this bridge's own bearer token, minted on first run
+identity.json
 __pycache__/
 *.pyc
 *.zip
 
 .DS_Store
+
+# Backups of inventory.json — same device keys, same rule.
+inventory.json.bak-*

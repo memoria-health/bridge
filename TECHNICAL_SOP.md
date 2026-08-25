@@ -75,15 +75,17 @@ Warner connection and fans the same capture out to multiple LiveKit publishers.
 
 ## 4. Package contents
 
-- `warner_bridge.py`: provisioning API, roster, token and worker supervisor.
-- `warner_bridge_static/`: administrator and hidden runtime pages.
-- `warner_sdk/`: licensed vendor JavaScript/WASM SDK.
+- `bridge.py`: entrypoint. `BRIDGE_VENDOR` selects the integration.
+- `core/`: vendor-agnostic. Backend roster, auth, LiveKit tokens, HTTP, health.
+- `vendors/base.py`: the contract every camera integration implements.
+- `vendors/warner/`: the Warner integration, including its licensed
+  JavaScript/WASM SDK (`sdk/`) and its runtime page (`static/`).
 - `cameras.json`: gateway/backend/LiveKit configuration; secret, created locally.
-- `warner_cameras.json`: provisioned device keys/passwords; secret, generated.
+- `inventory.json`: provisioned device keys/passwords; secret, generated.
 - `gateway-config.example.json`: configuration template without credentials.
 - `scripts/`: installation, startup, health and diagnostic tools.
 
-Back up `cameras.json` and `warner_cameras.json` securely. Never commit them or
+Back up `cameras.json` and `inventory.json` securely. Never commit them or
 send them in support screenshots.
 
 ## 5. Prerequisites
@@ -219,7 +221,7 @@ Linux commands:
 
 ```bash
 curl -s http://127.0.0.1:8090/api/health | python3 -m json.tool
-sudo journalctl -u memoria-warner-bridge --since "10 minutes ago" --no-pager \
+sudo journalctl -u memoria-bridge --since "10 minutes ago" --no-pager \
   | grep -E 'warner video frames|VIDEO STALLED|p2p|fatal|error'
 ```
 
@@ -253,7 +255,7 @@ to preserve recovery headroom.
 
 ## 12. Backup, upgrade and recovery
 
-1. Back up `cameras.json` and `warner_cameras.json` securely.
+1. Back up `cameras.json` and `inventory.json` securely.
 2. Stop the background service/task.
 3. Replace application and SDK files without overwriting the two JSON files.
 4. Run the platform installer if dependencies changed.
@@ -262,7 +264,7 @@ to preserve recovery headroom.
 
 Before upgrade, preserve the existing executable files as well as the JSON
 configuration. To roll back this release, restore the previous
-`warner_bridge.py` and `warner_bridge_static/runtime.js`, then restart the
+`bridge.py`, `core/` and `vendors/`, then restart the
 service/task. Verify package checksums before and after replacement.
 
 If the bridge server is lost, install the same package on another machine,

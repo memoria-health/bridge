@@ -1,3 +1,5 @@
 aiohttp>=3.9,<4
 livekit-api>=1,<2
+# rtc: publish frames from Python as a cam_* participant, no Ingress
+livekit>=0.17,<1
 playwright>=1.45,<2

@@ -1,0 +1,24 @@
+# `browsers/` is where install.sh puts Chromium on the Ubuntu path. In
+# the image it lives at PLAYWRIGHT_BROWSERS_PATH=/opt/browsers instead,
+# and a host copy travelling in the build context would be a few hundred
+# MB of the wrong platform's binaries sitting at /app/browsers.
+browsers/
+
+# Live credentials, all three. cameras.json holds backend/LiveKit
+# settings, inventory.json each camera's device key and admin password,
+# identity.json this instance's bearer token. They are gitignored for
+# the same reason and must never be baked into an image that gets
+# pushed to a registry — the container reads them from the volume and
+# the environment.
+cameras.json
+inventory.json
+identity.json
+
+.venv/
+.git/
+logs/*
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+*.zip

@@ -32,16 +32,16 @@ unzip memoria-warner-linux-final.zip
 ## 3. Copy the application to `/opt`
 
 ```bash
-sudo mkdir -p /opt/memoria-warner-bridge
+sudo mkdir -p /opt/memoria-bridge
 sudo cp -a /home/administrator/memoria-warner-linux/. \
-  /opt/memoria-warner-bridge/
-ls -la /opt/memoria-warner-bridge
+  /opt/memoria-bridge/
+ls -la /opt/memoria-bridge
 ```
 
 ## 4. Run the installer
 
 ```bash
-cd /opt/memoria-warner-bridge
+cd /opt/memoria-bridge
 sudo bash scripts/install.sh
 ```
 
@@ -49,7 +49,7 @@ The installer:
 
 - creates the `memoria` service user when needed;
 - installs Python, pip, venv, curl and CA certificates;
-- creates `/opt/memoria-warner-bridge/.venv`;
+- creates `/opt/memoria-bridge/.venv`;
 - installs `aiohttp`, the LiveKit API SDK and Playwright;
 - installs headless Chromium and its Linux dependencies;
 - creates `cameras.json` from the example when it is missing;
@@ -58,7 +58,7 @@ The installer:
 ## 5. Configure the bridge
 
 ```bash
-sudo nano /opt/memoria-warner-bridge/cameras.json
+sudo nano /opt/memoria-bridge/cameras.json
 ```
 
 Enter the production values:
@@ -84,17 +84,17 @@ Save in Nano with `Ctrl+O`, Enter, then `Ctrl+X`.
 
 ```bash
 sudo chown memoria:memoria \
-  /opt/memoria-warner-bridge/cameras.json
+  /opt/memoria-bridge/cameras.json
 sudo chmod 600 \
-  /opt/memoria-warner-bridge/cameras.json
+  /opt/memoria-bridge/cameras.json
 ```
 
 ## 7. Start the service
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now memoria-warner-bridge
-sudo systemctl status memoria-warner-bridge
+sudo systemctl enable --now memoria-bridge
+sudo systemctl status memoria-bridge
 ```
 
 Expected status:
@@ -186,7 +186,7 @@ The camera worker should report:
 Check incoming camera frames:
 
 ```bash
-sudo journalctl -u memoria-warner-bridge \
+sudo journalctl -u memoria-bridge \
   --since "5 minutes ago" --no-pager |
 grep 'warner video frames'
 ```
@@ -203,19 +203,19 @@ warner video frames: 250 800x448 H265
 Follow logs:
 
 ```bash
-sudo journalctl -u memoria-warner-bridge -f
+sudo journalctl -u memoria-bridge -f
 ```
 
 Show recent logs:
 
 ```bash
-sudo journalctl -u memoria-warner-bridge -n 200 --no-pager
+sudo journalctl -u memoria-bridge -n 200 --no-pager
 ```
 
 Filter important events:
 
 ```bash
-sudo journalctl -u memoria-warner-bridge \
+sudo journalctl -u memoria-bridge \
   --since "10 minutes ago" --no-pager |
 grep -E 'worker|login succeeded|Open stream|warner video frames|LiveKit|publishing|HTTP 404|Aborted|error'
 ```
@@ -223,49 +223,61 @@ grep -E 'worker|login succeeded|Open stream|warner video frames|LiveKit|publishi
 Capture the hidden Warner canvas locally:
 
 ```bash
-curl --fail \
-  http://127.0.0.1:8090/api/debug/CAMERA_ID/screenshot \
-  --output /home/administrator/warner-debug.png
 ```
 
-The screenshot can contain private camera imagery. Delete it after diagnosis.
+Per-camera health, including frame age and what was applied, is on
+`/api/health` for an authorized caller.
 
 ## 13. Service management
 
 Restart:
 
 ```bash
-sudo systemctl restart memoria-warner-bridge
+sudo systemctl restart memoria-bridge
 ```
 
 Stop:
 
 ```bash
-sudo systemctl stop memoria-warner-bridge
+sudo systemctl stop memoria-bridge
 ```
 
 Start:
 
 ```bash
-sudo systemctl start memoria-warner-bridge
+sudo systemctl start memoria-bridge
 ```
 
 Disable automatic startup:
 
 ```bash
-sudo systemctl disable --now memoria-warner-bridge
+sudo systemctl disable --now memoria-bridge
 ```
 
-Only one bridge instance should run. Do not manually start `warner_bridge.py`
+Only one bridge instance should run. Do not manually start `bridge.py`
 or `python -m http.server` while the systemd service is active.
+
+## 13b. ffmpeg
+
+ffmpeg decodes every camera. `scripts/install.sh` installs it, but if you
+are setting a box up by hand, install it explicitly:
+
+```bash
+sudo apt-get install -y ffmpeg
+```
+
+The bridge refuses to start without it rather than failing per camera,
+because a box that runs no cameras while looking healthy is the worst
+outcome. It did not need ffmpeg before 2026-08-21, when the browser
+still decoded in WebAssembly.
 
 ## 14. Back up protected data
 
 ```bash
-sudo cp /opt/memoria-warner-bridge/cameras.json \
+sudo cp /opt/memoria-bridge/cameras.json \
   /home/administrator/cameras.json.backup
-sudo cp /opt/memoria-warner-bridge/warner_cameras.json \
-  /home/administrator/warner_cameras.json.backup
+sudo cp /opt/memoria-bridge/inventory.json \
+  /home/administrator/inventory.json.backup
 ```
 
 Both backups contain credentials and must be stored securely.
@@ -275,22 +287,22 @@ Both backups contain credentials and must be stored securely.
 Back up the two JSON files before copying a newer package:
 
 ```bash
-sudo systemctl stop memoria-warner-bridge
-sudo cp /opt/memoria-warner-bridge/cameras.json \
+sudo systemctl stop memoria-bridge
+sudo cp /opt/memoria-bridge/cameras.json \
   /home/administrator/cameras.json.backup
-sudo cp /opt/memoria-warner-bridge/warner_cameras.json \
-  /home/administrator/warner_cameras.json.backup
+sudo cp /opt/memoria-bridge/inventory.json \
+  /home/administrator/inventory.json.backup
 sudo cp -a /home/administrator/memoria-warner-linux/. \
-  /opt/memoria-warner-bridge/
-sudo chown -R memoria:memoria /opt/memoria-warner-bridge
+  /opt/memoria-bridge/
+sudo chown -R memoria:memoria /opt/memoria-bridge
 sudo chmod 600 \
-  /opt/memoria-warner-bridge/cameras.json \
-  /opt/memoria-warner-bridge/warner_cameras.json
-sudo systemctl start memoria-warner-bridge
+  /opt/memoria-bridge/cameras.json \
+  /opt/memoria-bridge/inventory.json
+sudo systemctl start memoria-bridge
 ```
 
 The release archive intentionally excludes deployed `cameras.json` and
-`warner_cameras.json`, so copying the package does not overwrite them.
+`inventory.json`, so copying the package does not overwrite them.
 
 ## 16. Firewall guidance
 

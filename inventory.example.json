@@ -10,7 +10,7 @@
       "camera_password": "camera-password",
       "channel": 0,
       "stream_id": 1,
-      "livekit_identities": ["cam_backend_assigned"]
+      "livekit_identity": "cam_backend_assigned"
     }
   ]
 }
