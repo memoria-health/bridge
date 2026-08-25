@@ -13,3 +13,6 @@ __pycache__/
 *.zip
 
 .DS_Store
+
+# Backups of inventory.json — same device keys, same rule.
+inventory.json.bak-*
