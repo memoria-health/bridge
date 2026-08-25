@@ -461,9 +461,23 @@ async def _maybe_await(result: Any) -> Any:
     return result
 
 
-# 5 Mbps: this vendor's source is 2304x1296, 44% more pixels than the
-# gateway's 1080p at 4 Mbps.
-_VIDEO_MAX_BITRATE = 5_000_000
+# 4 Mbps, the SAME as the gateway's Tapo, because the source is now the
+# same 1920x1080 it is.
+#
+# It was 5 Mbps, and the comment justifying it said why: "this vendor's
+# source is 2304x1296, 44% more pixels than the gateway's 1080p at 4
+# Mbps". True when written. On 2026-08-25 the capture was pinned to
+# 1920x1080 to match the Tapo and this number was not moved with it, so
+# the Warner spent the day asking for 25% more bandwidth than the Tapo
+# for a pixel-identical picture — and it was the one the SFU kept
+# shedding, 18 resolution changes in under five minutes while the Tapo
+# sat still.
+#
+# The publisher was never unhealthy: all three layers encoding, 14-15
+# fps, zero dropped frames, quality_limitation_reason=0 throughout. It
+# was simply over-asking, so the ladder it published was more than the
+# subscriber's path would carry and the SFU chose a lower rung.
+_VIDEO_MAX_BITRATE = 4_000_000
 
 
 def _default_publish_options(max_framerate: int, max_bitrate: int) -> Any:
