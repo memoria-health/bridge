@@ -22,7 +22,10 @@ from core import livekit_adapters
 from core.publisher import CameraPublisher
 from core.util import log
 from vendors.base import EntityHealth, Publisher, Vendor
-from vendors.warner.chromium import CAPTURE_HEIGHT, CAPTURE_WIDTH, ChromiumSupervisor
+from vendors.warner.chromium import (
+    CAPTURE_HEIGHT, CAPTURE_WIDTH, PUBLISH_HEIGHT, PUBLISH_WIDTH,
+    ChromiumSupervisor,
+)
 from vendors.warner.source import WarnerSource
 
 HERE = Path(__file__).resolve().parent
@@ -147,6 +150,8 @@ class WarnerVendor(Vendor):
             fps=int(camera.get("fps", 15)),
             width=int(camera.get("capture_width", CAPTURE_WIDTH)),
             height=int(camera.get("capture_height", CAPTURE_HEIGHT)),
+            out_width=PUBLISH_WIDTH,
+            out_height=PUBLISH_HEIGHT,
         )
         publisher = CameraPublisher(
             camera_id=camera_id,

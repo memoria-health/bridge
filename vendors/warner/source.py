@@ -370,19 +370,40 @@ class WarnerSource:
     """
 
     def __init__(self, camera_id: str, enc: str = "H265", fps: int = 15,
-                 width: int = 2304, height: int = 1296):
+                 width: int = 2304, height: int = 1296,
+                 out_width: int = 0, out_height: int = 0):
         self.camera_id = camera_id
         self.enc = enc
         self.fps = fps
+        # WHAT THE CAMERA SENDS versus WHAT WE PUBLISH. These were one
+        # pair of numbers, and conflating them is what broke the stream
+        # on 2026-08-25: `WARNER_CAPTURE_WIDTH` was set to 1920 to shrink
+        # the picture, but that constant ALSO tells Chromium what to
+        # capture, so it moved both ends at once and the mismatch check
+        # started shouting about a camera that was behaving perfectly.
+        #
+        # `width/height` stay the camera's true output — that is what
+        # `check_stream` compares against, and it must keep describing
+        # reality or it reports a fault that does not exist.
         self.width = width
         self.height = height
+        # `out_*` is what ffmpeg SCALES to and what we publish. Default
+        # is the camera's own size, so this changes nothing unless asked.
+        self.out_width = out_width or width
+        self.out_height = out_height or height
         # ONE definition of a frame's size, shared by the reader and the
         # pipe limit. It used to be recomputed in `video_frames`, which
         # is the kind of duplication that eventually disagrees — and
         # disagreeing here desyncs the stream permanently.
-        self.frame_size = width * height * 3 // 2
-        self.video = _Lane("video", camera_id,
-                           video_argv(enc, fps, width, height), self.frame_size)
+        #
+        # Derived from the OUTPUT size, which is the only size that ever
+        # appears on stdout: `-s` makes ffmpeg emit exactly this, whatever
+        # arrives. The reader therefore cannot desync from a scale.
+        self.frame_size = self.out_width * self.out_height * 3 // 2
+        self.video = _Lane(
+            "video", camera_id,
+            video_argv(enc, fps, self.out_width, self.out_height),
+            self.frame_size)
         # The facilities audio kill is decided upstream. When audio is
         # not wanted the lane is never created, so there is no
         # muted-but-open path to leak from.

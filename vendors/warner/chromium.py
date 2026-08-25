@@ -18,8 +18,40 @@ from core.config import (
 from core.util import log, redact
 from vendors.base import EntityHealth, Publisher  # noqa: F401
 
+# WHAT THE CAMERA SENDS. Not a resize, and not a knob: set these to
+# anything other than the camera's real output and `check_stream` starts
+# reporting a fault that does not exist. Changing them to shrink the
+# picture is what broke the stream on 2026-08-25 — they also tell
+# Chromium what to capture, so they move both ends at once.
 CAPTURE_WIDTH = int(os.environ.get("WARNER_CAPTURE_WIDTH", "2304"))
 CAPTURE_HEIGHT = int(os.environ.get("WARNER_CAPTURE_HEIGHT", "1296"))
+
+# WHAT WE PUBLISH. ffmpeg scales the decoded frames to this before they
+# reach LiveKit, and the fixed-chunk reader is sized from it, so the two
+# cannot disagree.
+#
+# 1920x1080, matching the gateway's Tapo. The reason is the encoder's
+# bitrate budget per pixel, measured 2026-08-25 while both cameras ran
+# side by side for the same twenty minutes:
+#
+#     Tapo   1920x1080 (2.07 Mpx) at 4 Mbps = 1.93 bits/px
+#            -> 1920x1080 in 41/41 samples, 15.0 fps in every one
+#     Warner 2304x1296 (2.99 Mpx) at 5 Mbps = 1.67 bits/px
+#            -> dropped to 320x180 twice, and fps wandered 10/9/9/8/0
+#
+# libwebrtc answers a starved bitrate target by shedding frame rate and
+# then resolution, which is exactly the pattern above. It is NOT the
+# network: measured at the subscriber during a drop, 11 Mbps was
+# available, round trip 27ms, zero packets lost and zero frames dropped.
+#
+# At 1920x1080 the same 5 Mbps buys 2.41 bits/px — above the Tapo, which
+# has never moved once since it pinned its encoding on 2026-07-27.
+#
+# Nothing downstream wants the extra pixels: face matching runs on the
+# bedroom's 1080p all day. This also cuts what LiveKit bills per
+# subscriber, since it is fewer pixels rather than more bitrate.
+PUBLISH_WIDTH = int(os.environ.get("WARNER_PUBLISH_WIDTH", "1920"))
+PUBLISH_HEIGHT = int(os.environ.get("WARNER_PUBLISH_HEIGHT", "1080"))
 
 
 class ChromiumSupervisor:

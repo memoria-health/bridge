@@ -171,8 +171,13 @@ class CameraPublisher:
             # server round-trip rather than by anything designed. The
             # permission is participant-level, so it can be set first.
             await self._apply_privacy(room, spec)
+            # The size we PUBLISH, which is what comes off the decoder —
+            # not the camera's native size. They differ whenever the
+            # source is asked to scale, and telling LiveKit the wrong one
+            # would describe frames that never arrive.
             video_source = self.video_source_factory(
-                self.source.width, self.source.height)
+                getattr(self.source, "out_width", None) or self.source.width,
+                getattr(self.source, "out_height", None) or self.source.height)
             track = self.track_factory("video", video_source)
             # EXPLICIT ENCODING, not the SDK defaults. The gateway learned
             # this on 2026-07-27 and the bridge never got the fix: with no

@@ -324,3 +324,54 @@ def test_a_lane_does_not_pretend_to_serve_audio_frames():
     `status()` looking perfectly callable."""
     assert not hasattr(src._Lane, "audio_frames")
     assert hasattr(WarnerSource, "audio_frames")
+
+
+# ── Publishing smaller than the camera sends ───────────────────────────
+#
+# The camera's size and the published size are two different numbers, and
+# treating them as one broke the stream on 2026-08-25: WARNER_CAPTURE_*
+# was set to 1920x1080 to shrink the picture, but that pair also tells
+# Chromium what to capture and is what `check_stream` compares against,
+# so it moved both ends and reported a fault on a healthy camera.
+#
+# Why publish smaller at all — measured over the same 20 minutes with
+# both cameras live: the Tapo (1920x1080 at 4 Mbps = 1.93 bits/px) held
+# 1920x1080 and 15.0 fps in 41 of 41 samples. The Warner (2304x1296 at
+# 5 Mbps = 1.67 bits/px) fell to 320x180 twice and its frame rate
+# wandered 10/9/9/8/0. Starved encoders shed frames, then resolution.
+
+
+def test_the_camera_size_and_the_published_size_are_separate():
+    s = WarnerSource("cam", width=2304, height=1296,
+                     out_width=1920, out_height=1080)
+    # check_stream must keep describing what the CAMERA sends, or it
+    # reports a mismatch that does not exist.
+    assert (s.width, s.height) == (2304, 1296)
+    assert (s.out_width, s.out_height) == (1920, 1080)
+
+
+def test_the_reader_is_sized_from_what_ffmpeg_actually_emits():
+    """The desync that `-s` exists to prevent. ffmpeg emits the OUTPUT
+    size whatever arrives, so the fixed-chunk reader must be sized from
+    that and never from the camera's native frame."""
+    s = WarnerSource("cam", width=2304, height=1296,
+                     out_width=1920, out_height=1080)
+    assert s.frame_size == 1920 * 1080 * 3 // 2
+    argv = s.video.argv if hasattr(s.video, "argv") else None
+    if argv:
+        assert argv[argv.index("-s") + 1] == "1920x1080"
+
+
+def test_omitting_the_output_size_changes_nothing():
+    """Default must be the camera's own size, so this knob is inert
+    until somebody deliberately sets it."""
+    s = WarnerSource("cam", width=2304, height=1296)
+    assert (s.out_width, s.out_height) == (2304, 1296)
+    assert s.frame_size == 2304 * 1296 * 3 // 2
+
+
+def test_a_mismatch_is_judged_against_the_camera_not_the_output():
+    """Scaling to 1080p must not make a 1296p camera look broken."""
+    s = WarnerSource("cam", width=2304, height=1296,
+                     out_width=1920, out_height=1080)
+    assert not stream_mismatch("2304x1296", s.enc, s.width, s.height)

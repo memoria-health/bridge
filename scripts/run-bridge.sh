@@ -57,12 +57,21 @@ export BACKEND_URL LIVEKIT_URL
 # 8090, the new one fails to bind, the old one exits a second later, and
 # the camera is left OFF with both processes gone. That took the TV Room
 # off the soak on 2026-08-25.
+# A LISTENER, not "any socket on this port". `lsof -ti :PORT` also
+# matches CLIENT sockets — including CLOSED ones a dead connection left
+# behind. VS Code's port forwarding keeps a fistful of those against
+# whatever it has ever attached to, so on 2026-08-26 this guard refused
+# to start the bridge while nothing whatsoever was listening, and the TV
+# Room stayed down because of the check meant to protect it.
+listener() {
+  lsof -nP -iTCP:"${BRIDGE_PORT:-8090}" -sTCP:LISTEN -t 2>/dev/null
+}
 for _ in $(seq 1 20); do
-  lsof -ti :"${BRIDGE_PORT:-8090}" >/dev/null 2>&1 || break
+  [ -z "$(listener)" ] && break
   sleep 1
 done
-if lsof -ti :"${BRIDGE_PORT:-8090}" >/dev/null 2>&1; then
-  echo "port ${BRIDGE_PORT:-8090} still held after 20s; refusing to start a second bridge" >&2
+if [ -n "$(listener)" ]; then
+  echo "port ${BRIDGE_PORT:-8090} still LISTENing after 20s; refusing to start a second bridge" >&2
   exit 1
 fi
 
