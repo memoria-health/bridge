@@ -41,33 +41,30 @@ if [[ -z "${LIVEKIT_URL:-}" ]]; then
   exit 1
 fi
 
-# Match the gateway's Tapo: 1920x1080, not the Warner's native
-# 2304x1296.
-#
-# Both cameras publish simulcast, so both CAN be downshifted by the SFU
-# when it thinks a subscriber's downlink is short. Measured 2026-08-25
-# over the same window, frames arriving at the identity service:
-#
-#     bedroom (Tapo, 1080p)     1920x1080 x48   640x360 x12   320x180 x7
-#     TV Room (Warner, 1296p)   2304x1296 x628  640x360 x355  320x180 x511
-#
-# 19 downshifts against 866. The Tapo is not immune, it just rarely
-# crosses the line; the Warner carries 44% more pixels on the same link
-# and crosses it constantly. WebRTC's own publisher stats say the
-# encoder is fine (quality_limitation_reason=0 on all three layers), so
-# the pixels are not the encoder's problem — they are the link's.
-#
-# Nothing downstream needs 2304: face detection works on the bedroom's
-# 1080p all day.
-export WARNER_CAPTURE_WIDTH="${WARNER_CAPTURE_WIDTH:-1920}"
-export WARNER_CAPTURE_HEIGHT="${WARNER_CAPTURE_HEIGHT:-1080}"
+# what the camera actually sends, and size the fixed-length frame reads
+# from ffmpeg (vendors/warner/source.py:check_stream). Setting them to
+# anything other than the camera's real output shifts every frame after
+# the first by the remainder, forever — the source logs STREAM MISMATCH
+# and says plainly that it does not recover. Pinned to 1920x1080 on
+# 2026-08-25 to "match the Tapo"; the camera sends 2304x1296, so it was
+# corrupting frames rather than resizing them. Left unset deliberately.
 
-# Chromium is vendored under browsers/ so a machine without the shared
-# Playwright cache still runs. Without this the launch fails on every
-# reconcile pass, forever, and the only symptom is a camera that never
-# comes online — see the note in core/server.py.
 export PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/browsers"
 export BACKEND_URL LIVEKIT_URL
+
+# Wait for a previous process to release the port before starting.
+# Without this, stop-then-start races: the dying bridge still holds
+# 8090, the new one fails to bind, the old one exits a second later, and
+# the camera is left OFF with both processes gone. That took the TV Room
+# off the soak on 2026-08-25.
+for _ in $(seq 1 20); do
+  lsof -ti :"${BRIDGE_PORT:-8090}" >/dev/null 2>&1 || break
+  sleep 1
+done
+if lsof -ti :"${BRIDGE_PORT:-8090}" >/dev/null 2>&1; then
+  echo "port ${BRIDGE_PORT:-8090} still held after 20s; refusing to start a second bridge" >&2
+  exit 1
+fi
 
 mkdir -p "$APP_DIR/logs"
 LOG="$APP_DIR/logs/bridge-$(date +%Y%m%d-%H%M%S).log"
