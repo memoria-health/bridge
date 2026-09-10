@@ -58,10 +58,22 @@ ENV BRIDGE_VENDOR=warner \
     BRIDGE_IDENTITY=/data/identity.json \
     PYTHONUNBUFFERED=1
 
-# Mount the volume here. Both files hold live credentials: the identity
-# is this instance's bearer token, the inventory each camera's device
-# key and admin password.
-VOLUME ["/data"]
+# /data is where the durable state lives. Both files in it hold live
+# credentials: the identity is this instance's bearer token, the inventory
+# each camera's device key and admin password.
+#
+# There is deliberately NO `VOLUME ["/data"]` here. Railway rejects the
+# directive at parse time -- "docker VOLUME at Line 64 is not supported,
+# use Railway Volumes" -- and does so BEFORE any build step runs, so the
+# deploy fails having emitted nothing but "scheduling build". Four builds
+# died that way on 2026-08-25 with no log to explain it.
+#
+# Nothing is lost by dropping it. VOLUME only ever declared an ANONYMOUS
+# volume for a bare `docker run` with no -v; it never created the mount
+# that matters. The mount is supplied by the platform (a Railway Volume at
+# /data) or by `-v` locally, and the entrypoint already mkdir -p's the
+# directory and REFUSES TO START if it is not writable -- which is the
+# real guard, and a louder one than an implicit volume.
 
 EXPOSE 8090
 
